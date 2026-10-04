@@ -12,17 +12,20 @@ let priceBook=null,economyBusy=false,inspectedCardId=null,priceRefreshFailed=fal
 const warmedImages = new Set();
 const resolvedImages = new Map();
 const numberFormatter = new Intl.NumberFormat('en-US');
-const CARDS = JSON.parse(document.getElementById('base-set-data').textContent);
+const {sets:SETS,setOf,isHolo,isShiny,cardNumber}=PackLabSets;
+const CARDS = [...JSON.parse(document.getElementById('base-set-data').textContent),...PACK_LAB_SKYRIDGE.cards];
+const BOOSTER_COUNT=CARDS.filter(c=>c.booster).length;
 const CARD_MAP = new Map(CARDS.map(card => [card.id, card]));
 const PACK_ART = {
+ skyridge:{name:'Ho-Oh',set:'ecard3',url:'https://tcgplayer-cdn.tcgplayer.com/product/138153_200w.jpg'},
  charizard: {name:'Charizard',className:'char',url:'https://totalcards.net/cdn/shop/files/charizard_base_set_pack.webp?v=1732890226&width=535'},
  blastoise: {name:'Blastoise',className:'blast',url:'https://totalcards.net/cdn/shop/files/base_set_long_crimp_blastoise.webp?v=1733151179&width=535'},
  venusaur: {name:'Venusaur',className:'venu',url:'https://totalcards.net/cdn/shop/files/venusaur_base_set_pack.webp?v=1732890227&width=535'}
 };
 const CARD_BACK = 'https://tcg.pokemon.com/assets/img/global/tcg-card-back-2x.jpg';
-const RARITY = {holo:'Holo Rare',rare:'Rare',uncommon:'Uncommon',common:'Common',energy:'Basic Energy'};
-const RARITY_ORDER = {holo:0,rare:1,uncommon:2,common:3,energy:4};
-const POOLS = Object.fromEntries(Object.keys(RARITY).map(r => [r,CARDS.filter(c=>c.rarity===r && c.booster).map(c=>c.id)]));
+const RARITY = {secret:'Crystal Rare',reverse:'Reverse Holo',holo:'Holo Rare',rare:'Rare',uncommon:'Uncommon',common:'Common',energy:'Basic Energy'};
+const RARITY_ORDER = {secret:0,holo:1,reverse:2,rare:3,uncommon:4,common:5,energy:6};
+const POOLS = Object.fromEntries(Object.keys(RARITY).map(r => [r,CARDS.filter(c=>setOf(c)==='base1' && c.rarity===r && c.booster).map(c=>c.id)]));
 const $ = (selector, root=document) => root.querySelector(selector);
 const $$ = (selector, root=document) => [...root.querySelectorAll(selector)];
 const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
@@ -39,12 +42,28 @@ const POKEMON = [[1,'Bulbasaur'],[3,'Venusaur'],[4,'Charmander'],[6,'Charizard']
 const ROUTES = {'#opening':'opener','#card-library':'library','#collection':'collection','#stats':'stats','#whos-that-pokemon':'quiz','#pokemon-memory':'memory'};
 let quiz=null,memory=null,memoryTimer=null;
 
-function emptyState(){return {version:3,packs:0,holoPulls:0,inventory:{},economy:{balance:START_BALANCE,soldCards:0,quizCorrect:0,spent:0,sales:0,quizEarned:0},history:[],lastPack:null,favorites:[],settings:{mode:'flip',art:'charizard',sound:false,layout:'grid'},updatedAt:Date.now()};}
+function currentSet(){return SETS[state.settings.set];}
+function validPackCards(p){const set=p.set||'base1';return Boolean(SETS[set]&&p.cards.length===SETS[set].size&&p.cards.every(id=>validCardId(id)&&setOf(CARD_MAP.get(id))===set));}
+function selectSet(id){
+ if(!SETS[id]||busy||economyBusy||pendingPack())return;
+ state.settings.set=id;state.settings.art=SETS[id].arts[0];showIdleOverride=true;saveState();renderOpener();renderHighlights();renderEconomy();
+}
+function renderSetLabels(){
+ const set=currentSet();$$('[data-action="holos"]').forEach(el=>el.innerHTML=set.id==='ecard3'?`View Crystal Pokémon ${icon('arrow')}`:`View all holo Pokémon ${icon('arrow')}`);$('#setPicker').value=set.id;$('#setPicker').disabled=busy||economyBusy||pendingPack();
+ $('#setPickerNote').textContent=pendingPack()?'Finish this pack to change sets.':set.id==='ecard3'?'182 cards + 150 reverse variants · Crystal chase cards':'102 cards · The original adventure';
+ $('#openerTitle').textContent=set.name.toUpperCase()+' PACK OPENER';$('#openerYear').textContent=set.year;
+ $('.opener-panel').setAttribute('aria-label',set.name+' pack opener');$('#stage').dataset.set=set.id;
+ $$('[data-booster-count]').forEach(el=>el.textContent=BOOSTER_COUNT);$('#collectionProgress').setAttribute('aria-valuemax',BOOSTER_COUNT);
+ $('#highlightsTitle').textContent=set.id==='ecard3'?'Crystal legends. Hidden treasures.':'The cards you came for.';
+}
+function emptyState(){return {version:4,packs:0,packCounts:{base1:0,ecard3:0},holoPulls:0,inventory:{},economy:{balance:START_BALANCE,soldCards:0,quizCorrect:0,spent:0,sales:0,quizEarned:0},history:[],lastPack:null,favorites:[],settings:{set:'base1',mode:'flip',art:'charizard',sound:false,layout:'grid'},updatedAt:Date.now()};}
 function paidPrice(pack){return Number.isSafeInteger(pack.paidCents)&&pack.paidCents>=0&&pack.paidCents<=1e9?pack.paidCents:null;}
 function validCardId(id){return Number.isInteger(id)&&CARD_MAP.has(id)&&id!==8;}
 function validatedState(input){
- if(!input||![1,2,3].includes(input.version)||!input.inventory||typeof input.inventory!=='object'||Array.isArray(input.inventory))throw new Error('Invalid save');
+ if(!input||![1,2,3,4].includes(input.version)||!input.inventory||typeof input.inventory!=='object'||Array.isArray(input.inventory))throw new Error('Invalid save');
  const out=emptyState();let total=0;
+ out.packCounts=input.version<4?{base1:input.packs,ecard3:0}:{base1:input.packCounts?.base1,ecard3:input.packCounts?.ecard3};
+ if(Object.values(out.packCounts).some(n=>!Number.isSafeInteger(n)||n<0)||out.packCounts.base1+out.packCounts.ecard3!==input.packs)throw new Error('Invalid set pack totals');
  if(input.version>=2){
   for(const key of Object.keys(out.economy)){
    const value=input.economy?.[key];if(!Number.isSafeInteger(value)||value<0||value>1e12)throw new Error('Invalid economy');
@@ -56,19 +75,20 @@ function validatedState(input){
   const id=Number(key);if(!validCardId(id)||!entry||!Number.isSafeInteger(entry.qty)||entry.qty<1||entry.qty>1e9)throw new Error('Invalid inventory');
   out.inventory[id]={qty:entry.qty,firstAt:Number(entry.firstAt)||0,lastAt:Number(entry.lastAt)||0};total+=entry.qty;
  }
- if(!Number.isSafeInteger(input.packs)||input.packs<0||!Number.isSafeInteger(input.packs*11)||total+out.economy.soldCards!==input.packs*11)throw new Error('Save totals do not match');
+ if(!Number.isSafeInteger(input.packs)||input.packs<0||!Number.isSafeInteger(input.packs*11)||total+out.economy.soldCards!==out.packCounts.base1*11+out.packCounts.ecard3*9)throw new Error('Save totals do not match');
  out.packs=input.packs;
- const ownedHolos=Object.entries(out.inventory).reduce((sum,[id,entry])=>sum+(CARD_MAP.get(Number(id)).rarity==='holo'?entry.qty:0),0);
+ const ownedHolos=Object.entries(out.inventory).reduce((sum,[id,entry])=>sum+(isHolo(CARD_MAP.get(Number(id)))?entry.qty:0),0);
  out.holoPulls=input.holoPulls??ownedHolos;
  if(!Number.isSafeInteger(out.holoPulls)||out.holoPulls<ownedHolos||out.holoPulls>out.packs)throw new Error('Invalid holo total');
- out.history=Array.isArray(input.history)?input.history.filter(p=>p&&Number.isInteger(p.number)&&p.number>0&&p.number<=out.packs&&Array.isArray(p.cards)&&p.cards.length===11&&p.cards.every(validCardId)).slice(0,200).map(p=>({number:p.number,paidCents:input.version===3?paidPrice(p):null,cards:p.cards,art:PACK_ART[p.art]?p.art:'charizard',at:Number(p.at)||0})):[];
+ out.history=Array.isArray(input.history)?input.history.filter(p=>p&&Number.isInteger(p.number)&&p.number>0&&p.number<=out.packs&&Array.isArray(p.cards)&&validPackCards(p)).slice(0,200).map(p=>({number:p.number,set:p.set||'base1',paidCents:input.version>=3?paidPrice(p):null,cards:p.cards,art:SETS[p.set||'base1'].arts.includes(p.art)?p.art:SETS[p.set||'base1'].arts[0],at:Number(p.at)||0})):[];
  out.favorites=Array.isArray(input.favorites)?[...new Set(input.favorites.filter(id=>Number.isInteger(id)&&CARD_MAP.has(id)))]:[];
- if(input.settings){out.settings.mode='flip';out.settings.art=PACK_ART[input.settings.art]?input.settings.art:'charizard';out.settings.sound=input.settings.sound===true;out.settings.layout=input.settings.layout==='album'?'album':'grid';}
+ if(input.settings){out.settings.mode='flip';out.settings.set=SETS[input.settings.set]?input.settings.set:'base1';out.settings.art=SETS[out.settings.set].arts.includes(input.settings.art)?input.settings.art:SETS[out.settings.set].arts[0];out.settings.sound=input.settings.sound===true;out.settings.layout=input.settings.layout==='album'?'album':'grid';}
  const p=input.lastPack;
- if(p&&Number.isInteger(p.number)&&p.number===out.packs&&Array.isArray(p.cards)&&p.cards.length===11&&p.cards.every(validCardId)){
-  out.lastPack={number:p.number,paidCents:input.version===3?paidPrice(p):null,cards:p.cards,art:PACK_ART[p.art]?p.art:'charizard',at:Number(p.at)||0,revealed:Math.max(0,Math.min(11,Math.floor(Number(p.revealed)||0))),newIndices:Array.isArray(p.newIndices)?[...new Set(p.newIndices.filter(i=>Number.isInteger(i)&&i>=0&&i<11))]:[],celebrated:p.celebrated===true,milestone:typeof p.milestone==='string'?p.milestone.slice(0,120):''};
+ if(p&&Number.isInteger(p.number)&&p.number===out.packs&&Array.isArray(p.cards)&&validPackCards(p)){
+  out.lastPack={number:p.number,set:p.set||'base1',paidCents:input.version>=3?paidPrice(p):null,cards:p.cards,art:SETS[p.set||'base1'].arts.includes(p.art)?p.art:SETS[p.set||'base1'].arts[0],at:Number(p.at)||0,revealed:Math.max(0,Math.min(p.cards.length,Math.floor(Number(p.revealed)||0))),newIndices:Array.isArray(p.newIndices)?[...new Set(p.newIndices.filter(i=>Number.isInteger(i)&&i>=0&&i<p.cards.length))]:[],celebrated:p.celebrated===true,milestone:typeof p.milestone==='string'?p.milestone.slice(0,120):''};
  }
  if(out.lastPack){const reserved={};for(const id of out.lastPack.cards.slice(out.lastPack.revealed))reserved[id]=(reserved[id]||0)+1;for(const [id,qty] of Object.entries(reserved))if((out.inventory[id]?.qty||0)<qty)throw new Error('Invalid unrevealed inventory');}
+ if(out.lastPack&&out.lastPack.revealed<out.lastPack.cards.length&&out.settings.set!==out.lastPack.set){out.settings.set=out.lastPack.set;out.settings.art=out.lastPack.art;}
  out.updatedAt=Number(input.updatedAt)||Date.now();return out;
 }
 function readState(){
@@ -87,7 +107,7 @@ function readState(){
 function saveState(economic=false){
  // A reveal or setting change must not overwrite a sale/reward from another tab.
  if(!economic&&storageAvailable){try{const raw=localStorage.getItem(STORAGE_KEY);if(raw){const latest=validatedState(JSON.parse(raw));if(latest.updatedAt>state.updatedAt){
-  const localPack=state.lastPack;state.economy=latest.economy;state.inventory=latest.inventory;state.packs=latest.packs;state.history=latest.history;state.holoPulls=latest.holoPulls;
+  const localPack=state.lastPack;state.economy=latest.economy;state.inventory=latest.inventory;state.packs=latest.packs;state.packCounts=latest.packCounts;state.history=latest.history;state.holoPulls=latest.holoPulls;
   if(localPack?.number===latest.lastPack?.number){state.lastPack={...localPack,revealed:Math.max(localPack.revealed,latest.lastPack.revealed)};}else state.lastPack=latest.lastPack;
   state.updatedAt=latest.updatedAt;
  }}}catch{}}
@@ -103,16 +123,16 @@ function displayInventory(){
  if(pack)pack.cards.slice(pack.revealed).forEach(id=>{if(inventory[id]&&--inventory[id].qty===0)delete inventory[id];});
  return inventory;
 }
-function totals(inventory=state.inventory){const entries=Object.entries(inventory);const total=entries.reduce((n,[,entry])=>n+entry.qty,0);const holos=entries.reduce((n,[id,entry])=>n+(CARD_MAP.get(Number(id)).rarity==='holo'?entry.qty:0),0);return {total,holos,unique:entries.length,packs:state.packs,complete:(entries.length/101*100).toFixed(1).replace(/\.0$/,''),rate:state.packs?`${((state.holoPulls-(state.lastPack&&state.lastPack.revealed<11&&CARD_MAP.get(state.lastPack.cards[10]).rarity==='holo'?1:0))/state.packs*100).toFixed(1)}%`:'—'};}
+function totals(inventory=state.inventory){const entries=Object.entries(inventory);const total=entries.reduce((n,[,entry])=>n+entry.qty,0);const holos=entries.reduce((n,[id,entry])=>n+(isHolo(CARD_MAP.get(Number(id)))?entry.qty:0),0);return {total,holos,unique:entries.length,packs:state.packs,complete:(entries.length/BOOSTER_COUNT*100).toFixed(1).replace(/\.0$/,''),rate:state.packs?`${((state.holoPulls-(state.lastPack&&state.lastPack.revealed<state.lastPack.cards.length&&isHolo(CARD_MAP.get(state.lastPack.cards.at(-1)))?1:0))/state.packs*100).toFixed(1)}%`:'—'};}
 function updateStats(){
  const t=totals(displayInventory());for(const [key,value] of Object.entries(t))$$(`[data-stat="${key}"]`).forEach(el=>el.textContent=typeof value==='number'?number(value):value);
- $('#progressFill').style.width=`${t.unique/101*100}%`;$('#collectionProgress').setAttribute('aria-valuenow',t.unique);
- $('#collectorRank').textContent=t.unique===101?'Base Set completist':t.unique>=75?'Dedicated collector':t.unique>=40?'Growing the binder':t.packs>0?'The collection begins':'A fresh start';
+ $('#progressFill').style.width=`${t.unique/BOOSTER_COUNT*100}%`;$('#collectionProgress').setAttribute('aria-valuenow',t.unique);
+ $('#collectorRank').textContent=t.unique===BOOSTER_COUNT?'Master collector':t.unique>=75?'Dedicated collector':t.unique>=40?'Growing the binder':t.packs>0?'The collection begins':'A fresh start';
  renderRecent();if(activeTab==='collection')renderCollection();if(activeTab==='stats')renderStatistics();setStorageLabels();renderEconomy();
 }
 function renderRecent(){
  const entries=[];
- for(const pack of state.history){const count=pack.number===state.lastPack?.number?state.lastPack.revealed:11;for(let i=count-1;i>=0&&entries.length<5;i--)entries.push({id:pack.cards[i],pack:pack.number});if(entries.length>=5)break;}
+ for(const pack of state.history){const count=pack.number===state.lastPack?.number?state.lastPack.revealed:pack.cards.length;for(let i=count-1;i>=0&&entries.length<5;i--)entries.push({id:pack.cards[i],pack:pack.number});if(entries.length>=5)break;}
  $('#recentPulls').innerHTML=entries.length?entries.map(({id,pack})=>`<button class="recent-pull" data-card="${id}" aria-label="Inspect ${escapeHtml(CARD_MAP.get(id).name)} from pack ${pack}">${cardImage(id,{lazy:false})}<span><b>${escapeHtml(CARD_MAP.get(id).name)}</b><small>PACK ${String(pack).padStart(3,'0')} · ${RARITY[CARD_MAP.get(id).rarity]}</small></span></button>`).join(''):`<span class="recent-empty">${icon('cards')}<span>A blank page. Your first discovery is one pack away.</span></span>`;
 }
 function randomInt(max){
@@ -122,18 +142,18 @@ function randomInt(max){
 }
 function sample(pool,count){const values=[...pool];for(let i=0;i<count;i++){const j=i+randomInt(values.length-i);[values[i],values[j]]=[values[j],values[i]];}return values.slice(0,count);}
 function rareCard(){const pool=randomInt(3)===0?POOLS.holo:POOLS.rare;return pool[randomInt(pool.length)];}
-function generatePack(){return [...sample(POOLS.common,5),...sample(POOLS.uncommon,3),POOLS.energy[randomInt(POOLS.energy.length)],POOLS.energy[randomInt(POOLS.energy.length)],rareCard()];}
+function generatePack(){return PackLabSets.generate(CARDS,state.settings.set,randomInt,sample);}
 function createAndSavePack(){
  const cost=packCost();
  if(pendingPack()||cost===null||state.economy.balance<cost)return null;
  const cards=generatePack();const at=Date.now(),newIndices=[];
  state.economy.balance-=cost;state.economy.spent+=cost;
  cards.forEach((id,index)=>{if(!state.inventory[id]){state.inventory[id]={qty:0,firstAt:at,lastAt:at};newIndices.push(index);}state.inventory[id].qty++;state.inventory[id].lastAt=at;});
- state.packs++;if(CARD_MAP.get(cards[10]).rarity==='holo')state.holoPulls++;const pack={number:state.packs,paidCents:cost,cards,art:state.settings.art,at,revealed:0,newIndices};state.lastPack=pack;
- state.history.unshift({number:pack.number,paidCents:cost,cards:[...cards],art:pack.art,at});state.history=state.history.slice(0,200);
+ state.packs++;state.packCounts[state.settings.set]++;if(isHolo(CARD_MAP.get(cards.at(-1))))state.holoPulls++;const pack={number:state.packs,set:state.settings.set,paidCents:cost,cards,art:state.settings.art,at,revealed:0,newIndices};state.lastPack=pack;
+ state.history.unshift({number:pack.number,set:pack.set,paidCents:cost,cards:[...cards],art:pack.art,at});state.history=state.history.slice(0,200);
  saveState(true);updateStats();return pack;
 }
-function packQuote(){return priceBook?priceBook.getPack():PackLabPricing.packQuote(globalThis.PACK_LAB_PRICE_SNAPSHOT?.pack);}
+function packQuote(){if(currentSet().packQuote)return {...currentSet().packQuote,stale:Date.now()-Date.parse(currentSet().packQuote.updated)>PackLabPricing.TTL*2};return priceBook?priceBook.getPack():PackLabPricing.packQuote(globalThis.PACK_LAB_PRICE_SNAPSHOT?.pack);}
 function packCost(){return packQuote().cents;}
 function cardQuote(id){return priceBook?priceBook.get(CARD_MAP.get(id)):PackLabPricing.quote(CARD_MAP.get(id));}
 function priceLabel(id){const q=cardQuote(id);return `<span class="card-price">${money(q.cents)} <small>${q.unavailable?'':q.stale?'USD · cached':'USD'}</small></span>`;}
@@ -143,9 +163,10 @@ function renderEconomy(){
  const value=Object.entries(displayInventory()).reduce((sum,[id,entry])=>sum+cardQuote(Number(id)).cents*entry.qty,0);
  $$('[data-collection-value]').forEach(el=>el.textContent=money(value));
  const pack=packQuote();
- $$('[data-pack-price-source]').forEach(el=>el.textContent=pack.unavailable?'Pack price unavailable':`TCGplayer · Revised Unlimited · ${new Date(pack.updated).toLocaleDateString('en-GB')}${pack.stale?' · cached':''}`);
+ $$('[data-pack-price-source]').forEach(el=>el.textContent=pack.unavailable?'Pack price unavailable':`${pack.source==='PriceCharting'?'PriceCharting · Ungraded · saved reference':'TCGplayer · Revised Unlimited'} · ${new Date(pack.updated).toLocaleDateString('en-GB')}${pack.stale?' · cached':''}`);
+ $$('[data-pack-source-link]').forEach(el=>el.href=pack.sourceUrl||PackLabPricing.PACK_SOURCE_URL);
  const count=Object.keys(priceBook?.quotes||{}).length;
- $$('[data-price-status]').forEach(el=>el.textContent=priceBook?.refreshing?'Updating card prices…':`${count} / 102 card prices available · TCGplayer · USD${priceRefreshFailed?' · using cached quotes':''}`);
+ $$('[data-price-status]').forEach(el=>el.textContent=priceBook?.refreshing?'Updating card prices…':`${count} / ${CARDS.length} card prices available · TCGplayer · USD${priceRefreshFailed?' · using cached quotes':''}`);
  $$('[data-action="refresh-prices"]').forEach(el=>el.disabled=Boolean(priceBook?.refreshing));
  const duplicates=saleSelection('duplicates');const total=duplicates.reduce((sum,item)=>sum+item.qty*item.cents,0);
  $$('[data-action="sell-duplicates"]').forEach(el=>{el.disabled=!duplicates.length||busy||economyBusy;el.textContent=`Sell duplicates · ${money(total)}`;});
@@ -199,13 +220,14 @@ function refreshPriceViews(result){
  if($('#cardDialog').open)openCard(inspectedCardId);
  if(!busy&&activeTab==='opener')renderOpener();
 }
-function packUrl(art){return `assets/packs/${art}-original.webp`;}
+function packUrl(art){return `assets/packs/${art}-original.${art==='skyridge'?'jpg':'webp'}`;}
 function imageCandidates(id,large=false){
- const urls=[`https://images.pokemontcg.io/base1/${id}${large?'_hires':''}.png`,`https://assets.tcgdex.net/en/base/base1/${id}/${large?'high':'low'}.webp`,`https://images.pokemontcg.io/base1/${id}${large?'':'_hires'}.png`];
+ const card=CARD_MAP.get(id),set=setOf(card),num=card.number||id;
+ const urls=[`https://images.pokemontcg.io/${set}/${num}${large?'_hires':''}.png`,...(set==='base1'?[`https://assets.tcgdex.net/en/base/base1/${num}/${large?'high':'low'}.webp`]:[]),`https://images.pokemontcg.io/${set}/${num}${large?'':'_hires'}.png`];
  return ASSET_MODE==='local'?[`assets/cards/${id}.png`,...urls]:urls;
 }
-function cardImage(id,{large=false,lazy=true,className=''}={}){const card=CARD_MAP.get(id);return `<img src="${resolvedImages.get(`${id}:${large}`)||imageCandidates(id,large)[0]}" data-img-kind="card" data-img-id="${id}" data-img-large="${large?'1':'0'}" data-img-attempt="0" alt="${escapeHtml(card.name)} · Base Set ${id}/102" width="600" height="825" ${lazy?'loading="lazy"':''} decoding="async" class="${className}" referrerpolicy="no-referrer">`;}
-function packImage(art){return `<img src="${packUrl(art)}" data-img-kind="pack" data-img-art="${art}" data-img-attempt="0" alt="Original English Base Set booster wrapper: ${PACK_ART[art].name}" width="535" height="535" decoding="async" referrerpolicy="no-referrer">`;}
+function cardImage(id,{large=false,lazy=true,className=''}={}){const card=CARD_MAP.get(id);return `<img src="${resolvedImages.get(`${id}:${large}`)||imageCandidates(id,large)[0]}" data-img-kind="card" data-img-id="${id}" data-img-large="${large?'1':'0'}" data-img-attempt="0" alt="${escapeHtml(card.name)} · ${SETS[setOf(card)].name} ${cardNumber(card)}" width="600" height="825" ${lazy?'loading="lazy"':''} decoding="async" class="${className} ${card.rarity==='reverse'?'reverse-printing':''}" referrerpolicy="no-referrer">`;}
+function packImage(art){return `<img src="${packUrl(art)}" data-img-kind="pack" data-img-art="${art}" data-img-attempt="0" alt="Original English ${SETS[PACK_ART[art].set||'base1'].name} booster wrapper: ${PACK_ART[art].name}" width="535" height="535" decoding="async" referrerpolicy="no-referrer">`;}
 function cardBack(){return `<img src="${ASSET_MODE==='local'?'assets/card-back.jpg':CARD_BACK}" data-img-kind="back" data-img-attempt="0" alt="Pokémon card back. Ready to reveal." width="660" height="921" decoding="async" referrerpolicy="no-referrer">`;}
 document.addEventListener('load',event=>{const img=event.target;if(img instanceof HTMLImageElement&&img.dataset.imgKind==='card')resolvedImages.set(`${img.dataset.imgId}:${img.dataset.imgLarge==='1'}`,img.currentSrc||img.src);},true);
 // Finite fallbacks: a failed image never creates an infinite retry loop.
@@ -216,13 +238,13 @@ document.addEventListener('error',event=>{
  if(kind==='pack')sources=[packUrl(img.dataset.imgArt),PACK_ART[img.dataset.imgArt].url];
  if(kind==='back')sources=ASSET_MODE==='local'?['assets/card-back.jpg',CARD_BACK]:[CARD_BACK];
  if(attempt<sources.length){if(sources[attempt]===img.src)attempt++;if(attempt<sources.length){img.dataset.imgAttempt=String(attempt);img.src=sources[attempt];return;}}
- const fallback=document.createElement('span');fallback.className='failed-image';fallback.setAttribute('role','img');fallback.setAttribute('aria-label',img.alt);fallback.textContent=kind==='pack'?`Base Set · ${PACK_ART[img.dataset.imgArt].name}\nPack image unavailable`:kind==='back'?'Card back · tap to reveal':`${CARD_MAP.get(Number(img.dataset.imgId)).name}\nReference image unavailable`;
+ const fallback=document.createElement('span');fallback.className='failed-image';fallback.setAttribute('role','img');fallback.setAttribute('aria-label',img.alt);fallback.textContent=kind==='pack'?`${SETS[PACK_ART[img.dataset.imgArt].set||'base1'].name} · ${PACK_ART[img.dataset.imgArt].name}\nPack image unavailable`:kind==='back'?'Card back · tap to reveal':`${CARD_MAP.get(Number(img.dataset.imgId)).name}\nReference image unavailable`;
  fallback.style.cssText='width:100%;height:100%;min-height:35px;white-space:pre-line;aspect-ratio:600/825;border-radius:5px;';
  img.replaceWith(fallback);$('#assetWarning').hidden=false;
 },true);
 
 // A pack is committed before any animation. Visual effects never draw new cards.
-function pendingPack(){return Boolean(state.lastPack && state.lastPack.revealed < 11);}
+function pendingPack(){return Boolean(state.lastPack && state.lastPack.revealed < state.lastPack.cards.length);}
 function mainAction(){
  if(busy)return;
  if(phase==='final'){finishPack({animated:true});return;}
@@ -230,7 +252,7 @@ function mainAction(){
 }
 function secondaryAction(){
  if(busy){if(phase==='reel'&&reelAnimation){try{reelAnimation.finish();}catch{}}return;}
- if(phase==='final'){openCard(state.lastPack.cards[10]);return;}
+ if(phase==='final'){openCard(state.lastPack.cards.at(-1));return;}
  if(pendingPack())revealAll();else openPack(true);
 }
 function setButtons(main,second,{loading=false,canSkip=false}={}){
@@ -241,56 +263,57 @@ function setButtons(main,second,{loading=false,canSkip=false}={}){
  $$('[data-mode]').forEach(button=>{button.disabled=loading;button.setAttribute('aria-pressed',String(button.dataset.mode===state.settings.mode));});
 }
 function syncControls(){
+ renderSetLabels();
  if(busy){const isReel=phase==='reel';setButtons(phase==='reveal'?'Revealing…':phase==='complete'?'Laying out your cards…':isReel?'Revealing your rare…':'Opening your pack…',isReel?'Skip animation':'Please wait',{loading:true,canSkip:isReel});return;}
  if(phase==='final'){
   setButtons('Put them in the binder','Inspect rare');
-  $('#controlNote').innerHTML='One pack. Eleven little pieces of 1999.';
+  $('#controlNote').innerHTML=`${state.lastPack.cards.length} cards. Ready for your binder.`;
  }else if(pendingPack()){
   const next=state.lastPack.revealed+1;
-  setButtons(next===11?'Reveal the rare card':`Reveal card ${next} / 11`,'Reveal all');
+  setButtons(next===state.lastPack.cards.length?'Reveal the rare card':`Reveal card ${next} / ${state.lastPack.cards.length}`,'Reveal all');
   $('#controlNote').innerHTML='Tap, swipe or press <span class="keycap">SPACE</span> to turn the next card.';
  }else{
   const cost=packCost();
   setButtons(`Buy pack · ${money(cost)}`,`Quick buy · ${money(cost)}`);
   $('#mainAction').disabled=$('#secondaryAction').disabled=cost===null||state.economy.balance<cost||economyBusy;
-  $('#controlNote').innerHTML=cost===null?'Pack price unavailable. Refresh prices to try again.':state.economy.balance<cost?'Not enough balance. Sell cards, play the quiz or reset your balance.':'11 cards per pack. Sell your pulls or keep your favourites.';
+  $('#controlNote').innerHTML=cost===null?'Pack price unavailable. Refresh prices to try again.':state.economy.balance<cost?'Not enough balance. Sell cards, play the quiz or reset your balance.':`${currentSet().size} cards per pack. Sell your pulls or keep your favourites.`;
  }
 }
-function artPicker(){return `<div class="art-picker" role="group" aria-label="Choose pack artwork">${Object.entries(PACK_ART).map(([key,art],i)=>`<button type="button" data-art="${key}" aria-pressed="${key===state.settings.art}"><span class="art-mini" aria-hidden="true">${packImage(key)}</span>${art.name}<span class="art-index">0${i+1}</span></button>`).join('')}</div>`;}
+function artPicker(){return `<div class="art-picker" role="group" aria-label="Choose pack artwork">${Object.entries(PACK_ART).filter(([key])=>currentSet().arts.includes(key)).map(([key,art],i)=>`<button type="button" data-art="${key}" aria-pressed="${key===state.settings.art}"><span class="art-mini" aria-hidden="true">${packImage(key)}</span>${art.name}<span class="art-index">0${i+1}</span></button>`).join('')}</div>`;}
 function renderIdle(){
- const selected=state.settings.art,others=Object.keys(PACK_ART).filter(key=>key!==selected);
+ const selected=state.settings.art,others=currentSet().arts.filter(key=>key!==selected);
  $('#stage').dataset.view='idle';
- $('#stageContent').innerHTML=`<div class="idle-content"><div class="stage-edition"><span>ORIGINAL SERIES</span><b>BASE SET / 1999</b></div><span class="stage-number">001—</span><span class="stage-watermark" aria-hidden="true">1999</span><span class="stage-side">ELEVEN CARDS. ENDLESS POSSIBILITY.</span><span class="stage-side right">HANDLE WITH NOSTALGIA</span><div class="pack-fan"><div class="pack-photo back-left" aria-hidden="true"><span class="pack-cutout">${packImage(others[0])}</span></div><div class="pack-photo back-right" aria-hidden="true"><span class="pack-cutout">${packImage(others[1])}</span></div><button type="button" class="pack-photo front" data-action="open" aria-label="Buy a ${PACK_ART[selected].name} Base Set pack for ${money(packCost())} USD"><span class="pack-escape" aria-hidden="true">${cardBack()}</span><span class="pack-cutout pack-body">${packImage(selected)}</span><span class="pack-cutout pack-top-piece" aria-hidden="true">${packImage(selected)}</span><span class="tear-seam" aria-hidden="true"></span></button><div class="pack-floor" aria-hidden="true"></div></div><span class="tear-hint">${icon('arrow')} Drag the foil, or tap to open</span>${artPicker()}</div>`;
+ $('#stageContent').innerHTML=`<div class="idle-content"><div class="stage-edition"><span>${currentSet().series.toUpperCase()}</span><b>${currentSet().name.toUpperCase()} / ${currentSet().year}</b></div><span class="stage-number">001—</span><span class="stage-watermark" aria-hidden="true">${currentSet().year}</span><span class="stage-side">${currentSet().size} CARDS. ENDLESS POSSIBILITY.</span><span class="stage-side right">HANDLE WITH NOSTALGIA</span><div class="pack-fan"><div class="pack-photo back-left" aria-hidden="true"><span class="pack-cutout">${packImage(others[0]||selected)}</span></div><div class="pack-photo back-right" aria-hidden="true"><span class="pack-cutout">${packImage(others[1]||selected)}</span></div><button type="button" class="pack-photo front" data-action="open" aria-label="Buy a ${PACK_ART[selected].name} ${currentSet().name} pack for ${money(packCost())} USD"><span class="pack-escape" aria-hidden="true">${cardBack()}</span><span class="pack-cutout pack-body">${packImage(selected)}</span><span class="pack-cutout pack-top-piece" aria-hidden="true">${packImage(selected)}</span><span class="tear-seam" aria-hidden="true"></span></button><div class="pack-floor" aria-hidden="true"></div></div><span class="tear-hint">${icon('arrow')} Drag the foil, or tap to open</span>${artPicker()}</div>`;
  phase='idle';syncControls();
 }
 function revealRail(pack,placed=Math.max(0,pack.revealed-1)){
  // The newest revealed card is still on the stack until its flight has landed.
- return `<div class="reveal-tray"><div class="tray-heading"><span>YOUR PACK SO FAR</span><span class="mono">${placed} <span class="muted">/ 11</span></span></div><div class="pull-rail" aria-label="Cards placed from this pack">${pack.cards.map((id,i)=>{
+ return `<div class="reveal-tray"><div class="tray-heading"><span>YOUR PACK SO FAR</span><span class="mono">${placed} <span class="muted">/ ${pack.cards.length}</span></span></div><div class="pull-rail" aria-label="Cards placed from this pack">${pack.cards.map((id,i)=>{
   const shown=i<placed,card=CARD_MAP.get(id);
-  return shown?`<button class="pull-slot is-shown ${i===10?'is-rare':''}" data-slot="${i}" data-card="${id}" aria-label="Inspect ${escapeHtml(card.name)}, card ${i+1} of 11"><span class="slot-image">${cardImage(id,{lazy:false})}</span><span class="slot-number">${String(i+1).padStart(2,'0')}</span></button>`:`<div class="pull-slot ${i===10?'is-rare':''}" data-slot="${i}" aria-label="Card ${i+1}, not yet in tray"><span class="slot-placeholder">${i===10?icon('star'):icon('cards')}</span><span class="slot-number">${String(i+1).padStart(2,'0')}</span></div>`;
+  return shown?`<button class="pull-slot is-shown ${i===pack.cards.length-1?'is-rare':''}" data-slot="${i}" data-card="${id}" aria-label="Inspect ${escapeHtml(card.name)}, card ${i+1} of ${pack.cards.length}"><span class="slot-image">${cardImage(id,{lazy:false})}</span><span class="slot-number">${String(i+1).padStart(2,'0')}</span></button>`:`<div class="pull-slot ${i===pack.cards.length-1?'is-rare':''}" data-slot="${i}" aria-label="Card ${i+1}, not yet in tray"><span class="slot-placeholder">${i===pack.cards.length-1?icon('star'):icon('cards')}</span><span class="slot-number">${String(i+1).padStart(2,'0')}</span></div>`;
  }).join('')}</div></div>`;
 }
 function renderReveal(){
- const pack=state.lastPack,r=pack.revealed,id=pack.cards[Math.max(0,r-1)],card=CARD_MAP.get(id),isHolo=r>0&&card.rarity==='holo';
- const faceId=r?id:pack.cards[0],remaining=11-r;
+ const pack=state.lastPack,r=pack.revealed,id=pack.cards[Math.max(0,r-1)],card=CARD_MAP.get(id),isHolo=r>0&&isShiny(card);
+ const faceId=r?id:pack.cards[0],remaining=pack.cards.length-r;
  $('#stage').dataset.view='reveal';
  const isNew=r&&pack.newIndices.includes(r-1),iconic=isHolo&&isNew&&[2,4,15].includes(id);
  const visibleQty=displayInventory()[id]?.qty||0;
- $('#stageContent').innerHTML=`<div class="reveal-scene ${isHolo?'holo-moment':''} ${iconic?'iconic-moment':''}"><div class="reveal-topline"><span class="eyebrow">PACK <span class="gold">Nº ${String(pack.number).padStart(3,'0')}</span></span><span class="reveal-step">${String(r).padStart(2,'0')} / 11</span></div><div class="reveal-board"><div class="table-caption" aria-hidden="true"><span>${iconic?'AN ORIGINAL ICON':'THE ORIGINAL'}</span><b>’99</b></div><div class="card-aura" aria-hidden="true"></div><div class="card-stack">${remaining?`<span class="stack-sheet stack-third" aria-hidden="true">${cardBack()}</span><span class="stack-sheet stack-second" aria-hidden="true">${cardBack()}</span>`:''}<button type="button" class="big-card tilt-surface ${isHolo?'is-holo':''}" data-action="reveal" aria-label="${r===11?'See all 11 cards':`Reveal card ${r+1} of 11`}"><span class="card-flipper ${r?'is-face-up':''}"><span class="card-face face-back" aria-hidden="true">${cardBack()}</span><span class="card-face face-front ${isHolo?'holo-shine':''}" aria-hidden="${r?'false':'true'}">${r?cardImage(faceId,{large:true,lazy:false}):''}</span></span></button></div><span class="stack-caption">${r===0?'YOUR FIRST CARD IS WAITING':r===11?(iconic?'SOME FINDS STAY WITH YOU.':'THE LAST CARD. TAKE IT IN.'):r===10?'ONE LAST LITTLE MYSTERY':`${remaining} ${remaining===1?'CARD':'CARDS'} TO GO`}</span></div><div class="reveal-description"><h2 class="reveal-name">${r?escapeHtml(card.name):'What’s waiting inside?'}${isNew?'<span class="new-badge">NEW</span>':''}</h2><p class="reveal-rarity">${r?`<span class="rarity-label ${card.rarity}">${RARITY[card.rarity]}</span><span class="detail-divider">/</span><span class="mono">${String(id).padStart(3,'0')} · 102</span>${!isNew?`<span class="duplicate-badge">×${visibleQty} in your binder</span>`:''}`:'Eleven possibilities. Turn the first card.'}</p></div>${revealRail(pack)}</div>`;
+ $('#stageContent').innerHTML=`<div class="reveal-scene ${isHolo?'holo-moment':''} ${iconic?'iconic-moment':''}"><div class="reveal-topline"><span class="eyebrow">PACK <span class="gold">Nº ${String(pack.number).padStart(3,'0')}</span></span><span class="reveal-step">${String(r).padStart(2,'0')} / ${pack.cards.length}</span></div><div class="reveal-board"><div class="table-caption" aria-hidden="true"><span>${iconic?'AN ORIGINAL ICON':'THE ORIGINAL'}</span><b>’${String(SETS[pack.set||'base1'].year).slice(-2)}</b></div><div class="card-aura" aria-hidden="true"></div><div class="card-stack">${remaining?`<span class="stack-sheet stack-third" aria-hidden="true">${cardBack()}</span><span class="stack-sheet stack-second" aria-hidden="true">${cardBack()}</span>`:''}<button type="button" class="big-card tilt-surface ${isHolo?'is-holo':''}" data-action="reveal" aria-label="${r===pack.cards.length?`See all ${pack.cards.length} cards`:`Reveal card ${r+1} of ${pack.cards.length}`}"><span class="card-flipper ${r?'is-face-up':''}"><span class="card-face face-back" aria-hidden="true">${cardBack()}</span><span class="card-face face-front ${isHolo?'holo-shine':''}" aria-hidden="${r?'false':'true'}">${r?cardImage(faceId,{large:true,lazy:false}):''}</span></span></button></div><span class="stack-caption">${r===0?'YOUR FIRST CARD IS WAITING':r===pack.cards.length?(iconic?'SOME FINDS STAY WITH YOU.':'THE LAST CARD. TAKE IT IN.'):r===pack.cards.length-1?'ONE LAST LITTLE MYSTERY':`${remaining} ${remaining===1?'CARD':'CARDS'} TO GO`}</span></div><div class="reveal-description"><h2 class="reveal-name">${r?escapeHtml(card.name):'What’s waiting inside?'}${isNew?'<span class="new-badge">NEW</span>':''}</h2><p class="reveal-rarity">${r?`<span class="rarity-label ${card.rarity}">${RARITY[card.rarity]}</span><span class="detail-divider">/</span><span class="mono">${cardNumber(card)}</span>${!isNew?`<span class="duplicate-badge">×${visibleQty} in your binder</span>`:''}`:'Your next discovery. Turn the first card.'}</p></div>${revealRail(pack)}</div>`;
  if(remaining)warmCard(pack.cards[r],true);
 }
 function resultCard(card,index,{isNew=false,history=false}={}){
- const rare=index===10,holo=card.rarity==='holo';
- return `<button type="button" class="pack-card ${rare?'is-rare':''} ${holo?'is-holo':''}" data-card="${card.id}" data-pack-index="${index}" aria-label="${index+1} of 11: ${escapeHtml(card.name)}, ${RARITY[card.rarity]}${isNew?', new to your collection':''}"><span class="pack-card-top"><span class="mono">${String(index+1).padStart(2,'0')}</span><span class="pack-card-label">${rare?'★ RARE SLOT':isNew?'NEW':'BASE SET'}</span></span><span class="pack-card-media tilt-surface"><span class="card-flipper is-face-up"><span class="card-face face-back" aria-hidden="true">${cardBack()}</span><span class="card-face face-front ${holo?'holo-shine':''}">${cardImage(card.id,{lazy:history})}</span></span></span><span class="pack-card-name">${escapeHtml(card.name)}</span>${priceLabel(card.id)}<span class="pack-card-meta"><span>${RARITY[card.rarity]}</span><span class="mono">${card.id}/102</span></span>${rare&&isNew?'<span class="rare-new">NEW DISCOVERY</span>':''}</button>`;
+ const size=SETS[setOf(card)].size,rare=index===size-1,holo=isShiny(card);
+ return `<button type="button" class="pack-card ${rare?'is-rare':''} ${holo?'is-holo':''}" data-card="${card.id}" data-pack-index="${index}" aria-label="${index+1} of ${size}: ${escapeHtml(card.name)}, ${RARITY[card.rarity]}${isNew?', new to your collection':''}"><span class="pack-card-top"><span class="mono">${String(index+1).padStart(2,'0')}</span><span class="pack-card-label">${rare?'★ RARE SLOT':isNew?'NEW':SETS[setOf(card)].name.toUpperCase()}</span></span><span class="pack-card-media tilt-surface"><span class="card-flipper is-face-up"><span class="card-face face-back" aria-hidden="true">${cardBack()}</span><span class="card-face face-front ${holo?'holo-shine':''}">${cardImage(card.id,{lazy:history})}</span></span></span><span class="pack-card-name">${escapeHtml(card.name)}</span>${priceLabel(card.id)}<span class="pack-card-meta"><span>${RARITY[card.rarity]}</span><span class="mono">${cardNumber(card)}</span></span>${rare&&isNew?'<span class="rare-new">NEW DISCOVERY</span>':''}</button>`;
 }
 function renderResult(){
- const pack=state.lastPack,rare=CARD_MAP.get(pack.cards[10]),holo=rare.rarity==='holo';
+ const pack=state.lastPack,rare=CARD_MAP.get(pack.cards.at(-1)),holo=isHolo(rare);
  $('#stage').dataset.view='result';
  const packValue=pack.cards.reduce((sum,id)=>sum+cardQuote(id).cents,0);
- $('#stageContent').innerHTML=`<div class="result-scene"><div class="result-heading"><div><div class="eyebrow gold">PACK Nº ${String(pack.number).padStart(3,'0')} / THE COMPLETE PICTURE</div><h2>${holo?'That’s the feeling.':'A new page in your story.'}</h2><p>${pack.newIndices.length} new ${pack.newIndices.length===1?'discovery':'discoveries'}<span class="summary-dot">·</span>${11-pack.newIndices.length} ${11-pack.newIndices.length===1?'extra copy':'extra copies'}</p></div></div><div class="result-rare-note ${holo?'holo':''}">${icon('star')}<span>The find: <strong>${escapeHtml(rare.name)}</strong></span><span class="rare-note-label">${RARITY[rare.rarity]}</span></div><div class="pack-grid" aria-label="All 11 cards from your pack">${pack.cards.map((id,i)=>resultCard(CARD_MAP.get(id),i,{isNew:pack.newIndices.includes(i)})).join('')}</div><div class="result-receipt"><span>PACK REFERENCE VALUE</span><strong>${money(packValue)}</strong><span>USD · ${pack.paidCents===null||pack.paidCents===undefined?'earlier save':`paid ${money(pack.paidCents)}`}</span></div>${pack.newIndices.length?`<div class="binder-receipt" aria-label="New cards filed in your collection">${pack.newIndices.map((i,n)=>`<span class="binder-slot" style="--i:${n}">${cardImage(pack.cards[i],{lazy:false})}</span>`).join('')}<small>Filed. A little more complete.</small></div>`:''}${pack.milestone?`<div class="milestone">${icon('trophy')}<div><span>A MOMENT FOR THE JOURNAL</span><b>${escapeHtml(pack.milestone)}</b></div></div>`:''}<div class="result-bottom"><span>${icon('save')} This opening is saved in your journal.</span><button type="button" class="text-button" data-action="choose-pack">Change wrapper ${icon('arrow')}</button></div></div>`;
+ $('#stageContent').innerHTML=`<div class="result-scene"><div class="result-heading"><div><div class="eyebrow gold">PACK Nº ${String(pack.number).padStart(3,'0')} / THE COMPLETE PICTURE</div><h2>${holo?'That’s the feeling.':'A new page in your story.'}</h2><p>${pack.newIndices.length} new ${pack.newIndices.length===1?'discovery':'discoveries'}<span class="summary-dot">·</span>${pack.cards.length-pack.newIndices.length} ${pack.cards.length-pack.newIndices.length===1?'extra copy':'extra copies'}</p></div></div><div class="result-rare-note ${holo?'holo':''}">${icon('star')}<span>The find: <strong>${escapeHtml(rare.name)}</strong></span><span class="rare-note-label">${RARITY[rare.rarity]}</span></div><div class="pack-grid" aria-label="All ${pack.cards.length} cards from your pack">${pack.cards.map((id,i)=>resultCard(CARD_MAP.get(id),i,{isNew:pack.newIndices.includes(i)})).join('')}</div><div class="result-receipt"><span>${pack.cards.some(id=>cardQuote(id).unavailable)?'KNOWN CARD VALUES':'PACK REFERENCE VALUE'}</span><strong>${money(packValue)}</strong><span>USD · ${pack.paidCents===null||pack.paidCents===undefined?'earlier save':`paid ${money(pack.paidCents)}`}</span></div>${pack.newIndices.length?`<div class="binder-receipt" aria-label="New cards filed in your collection">${pack.newIndices.map((i,n)=>`<span class="binder-slot" style="--i:${n}">${cardImage(pack.cards[i],{lazy:false})}</span>`).join('')}<small>Filed. A little more complete.</small></div>`:''}${pack.milestone?`<div class="milestone">${icon('trophy')}<div><span>A MOMENT FOR THE JOURNAL</span><b>${escapeHtml(pack.milestone)}</b></div></div>`:''}<div class="result-bottom"><span>${icon('save')} This opening is saved in your journal.</span><button type="button" class="text-button" data-action="choose-pack">Change wrapper ${icon('arrow')}</button></div></div>`;
 }
 function renderOpener(){
- if(!state.lastPack||showIdleOverride)renderIdle();
+ if(!state.lastPack||showIdleOverride||(!pendingPack()&&state.lastPack.set!==state.settings.set))renderIdle();
  else if(pendingPack()){phase='ready';renderReveal();syncControls();}
  else{phase='complete';renderResult();syncControls();}
 }
@@ -321,11 +344,13 @@ function bringStageIntoView(){
 async function openPack(quick=false){
  if(busy||economyBusy||pendingPack())return;
  if(externalStatePending){refreshExternalState();if(pendingPack())return;}
+ const requestedSet=state.settings.set,requestedArt=state.settings.art;
  busy=true;phase='opening';showIdleOverride=false;syncControls();
  const commit=()=>{
   // Serialize openings where supported, so two tabs do not overwrite each other.
   try{const raw=localStorage.getItem(STORAGE_KEY);if(raw){const latest=validatedState(JSON.parse(raw));if(latest.updatedAt>=state.updatedAt)state=latest;}}catch{}
   if(pendingPack())return null;
+  state.settings.set=requestedSet;state.settings.art=requestedArt;
   return createAndSavePack();
  };
  let pack;
@@ -365,25 +390,25 @@ async function revealNext(){
  const focusCard=document.activeElement?.classList.contains('big-card');
  const previous=state.lastPack.revealed;
  try{
-  if(previous===10&&!reducedMotion()){$('.reveal-scene')?.classList.add('rare-anticipation');await sleep(350);}
+  if(previous===state.lastPack.cards.length-1&&!reducedMotion()){$('.reveal-scene')?.classList.add('rare-anticipation');await sleep(350);}
   await prepareCardImage(state.lastPack.cards[previous]);
   await moveCurrentCardToTray();
   state.lastPack.revealed=previous+1;saveState();renderReveal();syncControls();
-  const r=state.lastPack.revealed,card=CARD_MAP.get(state.lastPack.cards[r-1]);
+  const pack=state.lastPack,r=pack.revealed,card=CARD_MAP.get(state.lastPack.cards[r-1]);
   const front=$('.big-card'),flipper=$('.big-card .card-flipper');
-  sound(card.rarity==='holo'?'holo':'flip');
+  sound(isShiny(card)?'holo':'flip');
   await Promise.all([
-   animateElement(front,[{transform:'translate(26px,12px) rotate(5deg) scale(.94)'},{transform:'translate(0,-12px) rotate(-2deg) scale(1.035)',offset:.64},{transform:'translate(0,0) rotate(0deg) scale(1)'}],{duration:card.rarity==='holo'?680:510}),
-   animateElement(flipper,[{transform:'rotateY(180deg)'},{transform:'rotateY(180deg)',offset:.12},{transform:'rotateY(-9deg)',offset:.82},{transform:'rotateY(0deg)'}],{duration:card.rarity==='holo'?680:510,easing:'cubic-bezier(.3,.6,.22,1)'}),
+   animateElement(front,[{transform:'translate(26px,12px) rotate(5deg) scale(.94)'},{transform:'translate(0,-12px) rotate(-2deg) scale(1.035)',offset:.64},{transform:'translate(0,0) rotate(0deg) scale(1)'}],{duration:isShiny(card)?680:510}),
+   animateElement(flipper,[{transform:'rotateY(180deg)'},{transform:'rotateY(180deg)',offset:.12},{transform:'rotateY(-9deg)',offset:.82},{transform:'rotateY(0deg)'}],{duration:isShiny(card)?680:510,easing:'cubic-bezier(.3,.6,.22,1)'}),
    animateElement($('.reveal-description'),[{opacity:0,transform:'translateY(8px)'},{opacity:1,transform:'translateY(0)'}],{duration:250,delay:reducedMotion()?0:270})
   ]);
-  if(card.rarity==='holo')sparkles($('.reveal-scene'),$('.big-card'));
+  if(isShiny(card))sparkles($('.reveal-scene'),$('.big-card'));
   updateStats();
   const slot=$(`[data-slot="${r-1}"]`),rail=$('.pull-rail');
   if(slot&&rail&&rail.scrollWidth>rail.clientWidth)rail.scrollTo({left:Math.max(0,slot.offsetLeft-rail.offsetLeft-rail.clientWidth/2+slot.clientWidth/2),behavior:reducedMotion()?'auto':'smooth'});
-  announce(`Card ${r} of 11: ${card.name}, ${RARITY[card.rarity]}.${r===11?' View all 11 cards when you are ready.':''}`);
+  announce(`Card ${r} of ${pack.cards.length}: ${card.name}, ${RARITY[card.rarity]}.${r===pack.cards.length?` View all ${pack.cards.length} cards when you are ready.`:''}`);
   if(focusCard)front?.focus({preventScroll:true});
- }finally{busy=false;phase=state.lastPack.revealed===11?'final':'ready';syncControls();}
+ }finally{busy=false;phase=state.lastPack.revealed===state.lastPack.cards.length?'final':'ready';syncControls();}
 }
 function revealAll(){if(busy||!pendingPack())return;finishPack({animated:true});}
 async function finishPack({animated=false}={}){
@@ -391,9 +416,9 @@ async function finishPack({animated=false}={}){
  if(phase==='final'){busy=true;phase='complete';syncControls();await moveCurrentCardToTray();}
  const firstCompletion=!state.lastPack.celebrated;
  if(firstCompletion){state.lastPack.milestone=packMilestone(state.lastPack);state.lastPack.celebrated=true;}
- state.lastPack.revealed=11;saveState();phase='complete';busy=animated&&!reducedMotion();reelAnimation=null;
+ state.lastPack.revealed=state.lastPack.cards.length;saveState();phase='complete';busy=animated&&!reducedMotion();reelAnimation=null;
  renderResult();syncControls();updateStats();
- const card=CARD_MAP.get(state.lastPack.cards[10]);
+ const card=CARD_MAP.get(state.lastPack.cards.at(-1));
  if(animated&&!reducedMotion()){
   const cells=$$('.pack-grid .pack-card',$('#stageContent'));
   try{await Promise.all(cells.map((cell,i)=>{
@@ -406,19 +431,20 @@ async function finishPack({animated=false}={}){
  }
  busy=false;syncControls();
  if(firstCompletion&&!reducedMotion())$('.binder-receipt')?.classList.add('binder-arriving');
- if(card.rarity==='holo'){sound('holo');sparkles($('.result-scene'),$('.pack-card.is-rare'));}else sound('done');
- announce(`Pack complete. Your rare is ${card.name}. ${state.lastPack.newIndices.length} new cards discovered. All 11 cards are saved.`);
+ if(isShiny(card)){sound('holo');sparkles($('.result-scene'),$('.pack-card.is-rare'));}else sound('done');
+ announce(`Pack complete. Your rare is ${card.name}. ${state.lastPack.newIndices.length} new cards discovered. All ${state.lastPack.cards.length} cards are saved.`);
 }
 function packMilestone(pack){
  const before=Object.fromEntries(Object.entries(state.inventory).map(([id,e])=>[id,e.qty]));
  pack.cards.forEach(id=>{if(--before[id]===0)delete before[id];});
  const after=state.inventory,had=ids=>ids.every(id=>before[id]),has=ids=>ids.every(id=>after[id]);
  if(has([2,4,15])&&!had([2,4,15]))return 'The original trio. Together at last.';
- const previousHolos=Object.keys(before).some(id=>CARD_MAP.get(Number(id)).rarity==='holo');
- if(!previousHolos&&pack.cards.some(id=>CARD_MAP.get(id).rarity==='holo'))return 'Your first holo. A keeper.';
+ const previousHolos=Object.keys(before).some(id=>isHolo(CARD_MAP.get(Number(id))));
+ if(!previousHolos&&pack.cards.some(id=>isHolo(CARD_MAP.get(id))))return 'Your first holo. A keeper.';
  for(const [ids,name] of [[[46,24,4],'Charmander'],[[63,42,2],'Squirtle'],[[44,30,15],'Bulbasaur']])if(has(ids)&&!had(ids))return `The ${name} evolution. All three, collected.`;
+ for(const set of Object.keys(SETS)){const eligible=CARDS.filter(c=>c.booster&&setOf(c)===set);if(eligible.every(c=>after[c.id])&&!eligible.every(c=>before[c.id]))return `The complete ${SETS[set].name} booster collection.`;}
  const count=Object.keys(after).length,oldCount=Object.keys(before).length;
- for(const n of [101,75,50,25])if(count>=n&&oldCount<n)return n===101?'The complete Base Set booster collection.':`${n} discoveries. A binder full of stories.`;
+ for(const n of [BOOSTER_COUNT,200,100,75,50,25])if(count>=n&&oldCount<n)return n===BOOSTER_COUNT?'The complete booster collection.':`${n} discoveries. A binder full of stories.`;
  return pack.number===1?'Your first pack. The story starts here.':'';
 }
 function sparkles(scene=$('.result-scene'),anchor=null){
@@ -455,22 +481,22 @@ function toast(text){clearTimeout(toastTimer);$('#toast').textContent=text;$('#t
 
 function cardTile(card,{collection=false,highlight=false}={}){
  const owned=displayInventory()[card.id]?.qty||0;
- if(highlight)return `<button class="highlight-card" data-card="${card.id}" aria-label="Inspect ${escapeHtml(card.name)}, Holo Rare, ${card.id} of 102"><span class="catalogue-top"><span>Nº ${String(card.id).padStart(3,'0')} / 102</span><span class="rarity-star">✳</span></span><div class="image-shell holo-shine">${cardImage(card.id)}</div><strong>${escapeHtml(card.name)}</strong>${priceLabel(card.id)}<div class="mini-meta"><span>${card.type.toUpperCase()} · HOLO RARE</span>${icon('arrow')}</div></button>`;
- const tile=`<button type="button" class="mini-card ${collection&&!owned?'unowned':''}" data-card="${card.id}" aria-label="Inspect ${escapeHtml(card.name)}, ${RARITY[card.rarity]}, ${card.id} of 102${collection?`, ${owned} collected`:''}">${card.rarity==='holo'?`<span class="holo-tag">${card.id===8?'STARTER ONLY':'HOLO RARE'}</span>`:''}${owned&&!highlight?`<span class="owned-label">×${number(owned)}</span>`:''}<div class="image-shell ${card.rarity==='holo'?'holo-shine':''}">${cardImage(card.id)}</div><strong>${escapeHtml(card.name)}</strong>${priceLabel(card.id)}<div class="mini-meta"><span>${String(card.id).padStart(3,'0')}/102</span><span>${highlight?'Holo Rare':collection?(owned?'Collected':'Not found'):RARITY[card.rarity]}</span></div></button>`;
+ if(highlight)return `<button class="highlight-card" data-card="${card.id}" aria-label="Inspect ${escapeHtml(card.name)}, ${RARITY[card.rarity]}, ${cardNumber(card)}"><span class="catalogue-top"><span>Nº ${cardNumber(card)}</span><span class="rarity-star">✳</span></span><div class="image-shell holo-shine">${cardImage(card.id)}</div><strong>${escapeHtml(card.name)}</strong>${priceLabel(card.id)}<div class="mini-meta"><span>${card.type.toUpperCase()} · ${RARITY[card.rarity].toUpperCase()}</span>${icon('arrow')}</div></button>`;
+ const tile=`<button type="button" class="mini-card ${collection&&!owned?'unowned':''}" data-card="${card.id}" aria-label="Inspect ${escapeHtml(card.name)}, ${RARITY[card.rarity]}, ${cardNumber(card)}${collection?`, ${owned} collected`:''}">${isShiny(card)?`<span class="holo-tag">${card.id===8?'STARTER ONLY':RARITY[card.rarity].toUpperCase()}</span>`:''}${owned&&!highlight?`<span class="owned-label">×${number(owned)}</span>`:''}<div class="image-shell ${isShiny(card)?'holo-shine':''}">${cardImage(card.id)}</div><strong>${escapeHtml(card.name)}</strong>${priceLabel(card.id)}<div class="mini-meta"><span>${cardNumber(card)}</span><span>${highlight?RARITY[card.rarity]:collection?(owned?'Collected':'Not found'):RARITY[card.rarity]}</span></div></button>`;
  if(!collection)return tile;
  const quote=cardQuote(card.id);
  return `<div class="collection-card">${tile}${owned?`<button class="sell-card-button" data-sell-card="${card.id}" aria-label="Sell one ${escapeHtml(card.name)} for ${money(quote.cents)}" ${quote.unavailable||busy||economyBusy?'disabled':''}>Sell one · ${money(quote.cents)}</button>`:''}</div>`;
 }
-function renderHighlights(){$('#highlights').innerHTML=[4,2,15,10,16].map(id=>cardTile(CARD_MAP.get(id),{highlight:true})).join('');}
-function matchCard(card,query){if(!query)return true;const q=normalized(query.trim()).replace(/^#/,'');if(/^\d+(\/102)?$/.test(q))return card.id===parseInt(q,10);return normalized(`${card.name} ${card.type} ${card.kind} ${card.id} ${RARITY[card.rarity]}`).includes(q);}
+function renderHighlights(){$('#highlights').innerHTML=currentSet().highlights.map(id=>cardTile(CARD_MAP.get(id),{highlight:true})).join('');}
+function matchCard(card,query){if(!query)return true;const q=normalized(query.trim()).replace(/^#/,'');if(/^h?\d+(\/(h?\d+))?$/.test(q))return normalized(card.number||card.id)===q.split('/')[0].replace(/^0+(?=\d)/,'');return normalized(`${card.name} ${card.type} ${card.kind} ${SETS[setOf(card)].name} ${card.number||card.id} ${RARITY[card.rarity]}`).includes(q);}
 function sortCards(cards,sort){const inventory=displayInventory();return [...cards].sort((a,b)=>sort==='value'?cardQuote(b.id).cents-cardQuote(a.id).cents||a.id-b.id:sort==='name'?a.name.localeCompare(b.name):sort==='rarity'?RARITY_ORDER[a.rarity]-RARITY_ORDER[b.rarity]||a.id-b.id:sort==='quantity'?(inventory[b.id]?.qty||0)-(inventory[a.id]?.qty||0)||a.id-b.id:sort==='recent'?(inventory[b.id]?.lastAt||0)-(inventory[a.id]?.lastAt||0)||a.id-b.id:a.id-b.id);}
-function renderLibrary(){const kind=$('#libraryKind').value,query=$('#librarySearch').value;let cards=CARDS.filter(c=>(libraryFilter==='all'||c.rarity===libraryFilter)&&(kind==='all'||c.kind===kind)&&matchCard(c,query));cards=sortCards(cards,$('#librarySort').value);$('#libraryCount').textContent=`Showing ${cards.length} of 102 cards.`;$('#libraryGrid').innerHTML=cards.length?cards.map(c=>cardTile(c)).join(''):'<div class="grid-message"><h3>No cards found.</h3><p>Try another name, number, type or rarity.</p><button type="button" class="secondary" data-action="clear-library">Clear filters</button></div>';}
+function renderLibrary(){$('#setLibraryNote').textContent=$('#librarySet').value==='ecard3'?'Skyridge: 144 main cards, 32 H-series holos and 6 Crystal rares, plus 150 reverse variants. Reverse variants use the same reference scan with a foil effect.':'Machamp #8 is reference-only. Double Colorless Energy uses an uncommon slot.';const kind=$('#libraryKind').value,query=$('#librarySearch').value;let cards=CARDS.filter(c=>setOf(c)===$('#librarySet').value&&(libraryFilter==='all'||c.rarity===libraryFilter)&&(kind==='all'||c.kind===kind)&&matchCard(c,query));cards=sortCards(cards,$('#librarySort').value);$('#libraryCount').textContent=`Showing ${cards.length} of ${CARDS.filter(c=>setOf(c)===$('#librarySet').value).length} cards / variants.`;$('#libraryGrid').innerHTML=cards.length?cards.map(c=>cardTile(c)).join(''):'<div class="grid-message"><h3>No cards found.</h3><p>Try another name, number, type or rarity.</p><button type="button" class="secondary" data-action="clear-library">Clear filters</button></div>';}
 function renderCollection(){
  const query=$('#collectionSearch').value,view=$('#collectionView').value;
  const inventory=displayInventory();
- let cards=CARDS.filter(c=>{const owned=Boolean(inventory[c.id]);return c.booster&&matchCard(c,query)&&(view==='all'||view==='owned'&&owned||view==='missing'&&!owned||view==='favorites'&&state.favorites.includes(c.id)||view==='holos'&&owned&&c.rarity==='holo');});
+ let cards=CARDS.filter(c=>{const owned=Boolean(inventory[c.id]);return c.booster&&($('#collectionSet').value==='all'||setOf(c)===$('#collectionSet').value)&&matchCard(c,query)&&(view==='all'||view==='owned'&&owned||view==='missing'&&!owned||view==='favorites'&&state.favorites.includes(c.id)||view==='holos'&&owned&&isShiny(c));});
  cards=sortCards(cards,$('#collectionSort').value);$('#collectionCount').textContent=`Showing ${cards.length} cards${view==='missing'?' still to discover':''}.`;
- $('#collectionGrid').innerHTML=cards.length?cards.map(c=>cardTile(c,{collection:true})).join(''):`<div class="grid-message">${icon('cards')}<h3>${state.packs?'Nothing here just yet.':'Every collection starts with one pack.'}</h3><p>${state.packs?'Try another filter, favorite a card in the library, or open another pack.':'Your binder is empty. Buy a pack with your virtual balance to discover your first 11 cards.'}</p><button type="button" class="primary" data-tab="opener">Go to the pack opener ${icon('arrow')}</button></div>`;
+ $('#collectionGrid').innerHTML=cards.length?cards.map(c=>cardTile(c,{collection:true})).join(''):`<div class="grid-message">${icon('cards')}<h3>${state.packs?'Nothing here just yet.':'Every collection starts with one pack.'}</h3><p>${state.packs?'Try another filter, favorite a card in the library, or open another pack.':'Your binder is empty. Buy a pack with your virtual balance to start your collection.'}</p><button type="button" class="primary" data-tab="opener">Go to the pack opener ${icon('arrow')}</button></div>`;
  $('#collectionGrid').classList.toggle('album-view',state.settings.layout==='album');
  $$('[data-layout]').forEach(el=>el.setAttribute('aria-pressed',String(el.dataset.layout===state.settings.layout)));
 }
@@ -479,7 +505,7 @@ function renderStatistics(){
  const achievements=[['The first of many','Open your first pack',t.packs>=1,'pack'],['A little extra shine','Find your first Holo Rare',t.holos>=1,'star'],['The original trio','Discover Charizard, Blastoise and Venusaur',bigThree,'trophy'],['A well-loved binder','Discover 50 different booster cards',t.unique>=50,'cards']];
  $('#achievements').innerHTML=achievements.map(([title,description,earned,symbol])=>`<div class="achievement ${earned?'earned':''}"><span class="iconbox">${icon(symbol)}</span><div><b>${title}${earned?' ✓':''}</b><p>${description}</p></div></div>`).join('');
  if(!state.history.length){$('#historyTable').innerHTML='<div class="history-empty">Your first opening will appear here.</div>';return;}
- $('#historyTable').innerHTML=`<table class="history-table"><thead><tr><th scope="col">Pack</th><th scope="col">The find</th><th scope="col">Rarity</th><th scope="col" class="date-cell">Opened</th><th scope="col">Cards</th></tr></thead><tbody>${state.history.map(pack=>{const card=CARD_MAP.get(pack.cards[10]),sealed=pack.number===state.lastPack?.number&&pendingPack();return `<tr><td>#${number(pack.number)}</td><td>${sealed?'<span>Still a little mystery</span>':`<button type="button" class="history-card" data-card="${card.id}">${cardImage(card.id)}<span>${escapeHtml(card.name)}</span></button>`}</td><td class="${sealed?'':card.rarity}">${sealed?'Unrevealed':RARITY[card.rarity]}</td><td class="date-cell">${new Date(pack.at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td><td><button type="button" class="text-button" ${sealed?'data-tab="opener"':`data-history="${pack.number}"`} aria-label="${sealed?'Resume opening':`Inspect all 11 cards from pack ${pack.number}`}">${sealed?'Resume':'View pack'} ${icon('arrow')}</button></td></tr>`;}).join('')}</tbody></table>`;
+ $('#historyTable').innerHTML=`<table class="history-table"><thead><tr><th scope="col">Pack</th><th scope="col">The find</th><th scope="col">Rarity</th><th scope="col" class="date-cell">Opened</th><th scope="col">Cards</th></tr></thead><tbody>${state.history.map(pack=>{const card=CARD_MAP.get(pack.cards.at(-1)),sealed=pack.number===state.lastPack?.number&&pendingPack();return `<tr><td>#${number(pack.number)}<br><small>${SETS[pack.set||'base1'].name}</small></td><td>${sealed?'<span>Still a little mystery</span>':`<button type="button" class="history-card" data-card="${card.id}">${cardImage(card.id)}<span>${escapeHtml(card.name)}</span></button>`}</td><td class="${sealed?'':card.rarity}">${sealed?'Unrevealed':RARITY[card.rarity]}</td><td class="date-cell">${new Date(pack.at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</td><td><button type="button" class="text-button" ${sealed?'data-tab="opener"':`data-history="${pack.number}"`} aria-label="${sealed?'Resume opening':`Inspect all ${pack.cards.length} cards from pack ${pack.number}`}">${sealed?'Resume':'View pack'} ${icon('arrow')}</button></td></tr>`;}).join('')}</tbody></table>`;
 }
 function switchTab(tab,{focus=false}={}){
  if(!Object.values(ROUTES).includes(tab))return;activeTab=tab;
@@ -538,22 +564,31 @@ function flipMemory(index){
  else if(!memory.locked){const next=$('.memory-card:not(:disabled)');if(next)next.focus({preventScroll:true});}
 }
 function setLibraryFilter(filter){libraryFilter=filter;$$('#libraryFilters [data-filter]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.filter===filter)));renderLibrary();}
-function oddsFor(card){return !card.booster?'Not in boosters':card.rarity==='holo'?'2.22% · 1 in 45':card.rarity==='rare'?'4.17% · 1 in 24':card.rarity==='uncommon'?'9.38% · 3 in 32':card.rarity==='common'?'15.63% · 5 in 32':'30.56% · at least one copy';}
+function oddsFor(card){
+ if(setOf(card)==='ecard3'){
+  const chance=card.rarity==='secret'?1/216:card.rarity==='holo'?35/36/3/32:card.rarity==='rare'?35/36*2/3/35:card.rarity==='reverse'?(Number(card.number)>144?1/216:35/36/144):card.rarity==='common'?5/73:2/36;
+  return `${(chance*100).toFixed(2)}% per pack · ${RARITY[card.rarity]}`;
+ }
+ return !card.booster?'Not in boosters':isHolo(card)?'2.22% · 1 in 45':card.rarity==='rare'?'4.17% · 1 in 24':card.rarity==='uncommon'?'9.38% · 3 in 32':card.rarity==='common'?'15.63% · 5 in 32':'30.56% · at least one copy';
+}
 function openCard(id){
  const card=CARD_MAP.get(id);if(!card)return;inspectedCardId=id;$('#cardTitle').textContent=card.name;
- const quote=cardQuote(id),priceDescription=quote.unavailable?'Market price unavailable. Selling is paused for this card.':`TCGplayer via TCGdex · ${quote.amount.toFixed(2)} USD · ${quote.variant} · updated ${new Date(quote.updated).toLocaleDateString('en-GB')}${quote.stale?' · older cached price':''}`;
+ const quote=cardQuote(id),priceDescription=quote.unavailable?'Market price unavailable. Selling is paused for this card.':`TCGplayer via ${quote.provider||'TCGdex'} · ${quote.amount.toFixed(2)} USD · ${quote.variant} · updated ${new Date(quote.updated).toLocaleDateString('en-GB')}${quote.stale?' · older cached price':''}`;
  const favorite=state.favorites.includes(id),entry=displayInventory()[id],qty=entry?.qty||0;
- $('#cardBody').innerHTML=`<div class="card-detail"><div class="detail-art tilt-surface ${card.rarity==='holo'?'holo-shine':''}">${cardImage(id,{large:true,lazy:false,className:'detail-image'})}</div><div class="detail-info"><span class="pill ${card.rarity==='holo'?'gold':'green'}">${RARITY[card.rarity]}</span><dl><div><dt>Set</dt><dd>Base Set · English</dd></div><div><dt>Card number</dt><dd>${id}/102</dd></div><div><dt>Card category</dt><dd>${escapeHtml(card.kind)}</dd></div><div><dt>Type</dt><dd>${escapeHtml(card.type)}</dd></div><div><dt>Your copies</dt><dd>${number(qty)}</dd></div><div><dt>In booster pool</dt><dd>${card.booster?'Yes':'No — starter product'}</dd></div></dl><div class="card-sale"><span class="eyebrow">SELL VALUE PER CARD</span>${priceLabel(id)}<p>${escapeHtml(priceDescription)}</p><small>The full market price is added to your virtual USD balance. Market guide; individual condition and printing can differ.</small><button class="primary" data-sell-card="${id}" ${!qty||quote.unavailable||busy||economyBusy?'disabled':''}>${!qty?'No revealed copies to sell':quote.unavailable?'Price unavailable':`Sell one · ${money(quote.cents)}`}</button></div><p><strong class="gold">${oddsFor(card)}</strong><br>Modelled chance per simulated pack, not verified physical-pack odds. Artwork printing may differ from the wrapper shown.</p><button type="button" class="secondary" data-favorite="${id}" aria-pressed="${favorite}">${icon('star')}${favorite?'Remove favorite':'Add to favorites'}</button><a class="secondary" href="https://pkmncards.com/?s=${encodeURIComponent(`set:base-set number:${id}`)}" target="_blank" rel="noopener noreferrer">Card reference on PkmnCards ${icon('arrow')}</a></div></div>`;
+ $('#cardBody').innerHTML=`<div class="card-detail"><div class="detail-art tilt-surface ${isShiny(card)?'holo-shine':''}">${cardImage(id,{large:true,lazy:false,className:'detail-image'})}</div><div class="detail-info"><span class="pill ${isShiny(card)?'gold':'green'}">${RARITY[card.rarity]}</span><dl><div><dt>Set</dt><dd>${SETS[setOf(card)].name} · English</dd></div><div><dt>Card number</dt><dd>${cardNumber(card)}</dd></div><div><dt>Card category</dt><dd>${escapeHtml(card.kind)}</dd></div><div><dt>Type</dt><dd>${escapeHtml(card.type)}</dd></div><div><dt>Your copies</dt><dd>${number(qty)}</dd></div><div><dt>In booster pool</dt><dd>${card.booster?'Yes':'No — starter product'}</dd></div></dl><div class="card-sale"><span class="eyebrow">SELL VALUE PER CARD</span>${priceLabel(id)}<p>${escapeHtml(priceDescription)}</p><small>The full market price is added to your virtual USD balance. Market guide; individual condition and printing can differ.</small><button class="primary" data-sell-card="${id}" ${!qty||quote.unavailable||busy||economyBusy?'disabled':''}>${!qty?'No revealed copies to sell':quote.unavailable?'Price unavailable':`Sell one · ${money(quote.cents)}`}</button></div><p><strong class="gold">${oddsFor(card)}</strong><br>Modelled chance per simulated pack, not verified physical-pack odds. Artwork printing may differ from the wrapper shown.</p><button type="button" class="secondary" data-favorite="${id}" aria-pressed="${favorite}">${icon('star')}${favorite?'Remove favorite':'Add to favorites'}</button><a class="secondary" href="https://pkmncards.com/?s=${encodeURIComponent(`set:${setOf(card)==='base1'?'base-set':'skyridge'} number:${card.number||id}`)}" target="_blank" rel="noopener noreferrer">Card reference on PkmnCards ${icon('arrow')}</a></div></div>`;
  if(!$('#cardDialog').open)$('#cardDialog').showModal();
  if(entry){const row=document.createElement('div');const label=document.createElement('dt'),value=document.createElement('dd');label.textContent='First discovered';value.textContent=new Date(entry.firstAt).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});row.append(label,value);$('.detail-info dl').append(row);}
 }
 const infoContent={
- odds:{title:'A transparent simulation model',body:`<p>This prototype uses a simple, published-in-the-code model. It does <strong>not</strong> claim to reproduce factory pack odds or physical print-sheet collation.</p><table class="odds-table"><thead><tr><th>Slots</th><th>Pool</th><th>Selection in this model</th></tr></thead><tbody><tr><td>5 Common</td><td>32 cards</td><td>Uniform, without replacement</td></tr><tr><td>3 Uncommon</td><td>32 cards</td><td>Uniform, without replacement</td></tr><tr><td>2 Basic Energy</td><td>6 cards</td><td>Uniform; duplicates allowed</td></tr><tr><td>1 Rare slot</td><td>15 holos / 16 rares</td><td>1/3 holo; 2/3 non-holo rare</td></tr></tbody></table><p>One eligible holo is selected uniformly when the holo branch is chosen. A particular holo such as Charizard therefore has probability <strong>(1/3) × (1/15) = 1/45 ≈ 2.22%</strong> per simulated pack. A particular non-holo rare has probability <strong>(2/3) × (1/16) = 1/24 ≈ 4.17%</strong>.</p><h3>Important exceptions</h3><p>Machamp #8 appears in the full set library but not in this English booster pool. Double Colorless Energy #96 is uncommon and is selected through an uncommon slot, not a Basic Energy slot.</p><h3>What the animations mean</h3><p>The complete 11-card result is chosen once and saved before animation. Skipping, changing pack art or reloading never rerolls that pack. No paid features, adjusted outcomes or guaranteed box ratios are added.</p><div class="dialog-callout">Recipe reference: <a href="https://www.pokemastercenter.com/pokemon-base-set-guide/" target="_blank" rel="noopener noreferrer">Base Set pack guide</a>. The exact probabilities displayed above are design choices of this simulator, not official Pokémon guarantees.</div>`},
- about:{title:'A little nostalgia, built for free',body:`<p><strong>Pack Lab</strong> is a standalone design prototype: a free Base Set simulator with a collector-focused navigation, a card binder and a tactile foil-opening experience. It is not an official Pokémon product.</p><p>There are no accounts, advertisements, payment features, tradeable items or physical prizes. Every result is a local simulation.</p><h3>What is saved?</h3><p>Your virtual USD balance, quiz reward progress, collection counts, favorites, settings, current pack and latest 200 openings are stored under one separate local-storage key. Clearing site data removes your progress; there is no server backup.</p><h3>External requests</h3><p>This version loads card scans, fonts and public card prices from third-party hosts. Booster photos are stored locally, with the original host as a fallback. They receive ordinary requests from your browser. No analytics code is included. Images need an internet connection. Collection data stays on your device.</p><div class="dialog-callout">This is a prototype, with search-engine indexing disabled by default. Artwork credits and an unofficial label do not constitute permission to publish third-party material. The builder has not obtained a Pokémon license.</div>`},
+ odds:{title:'A transparent simulation model',body:`<p>This prototype uses a simple, published-in-the-code model. It does <strong>not</strong> claim to reproduce factory pack odds or physical print-sheet collation.</p><table class="odds-table"><thead><tr><th>Slots</th><th>Pool</th><th>Selection in this model</th></tr></thead><tbody><tr><td>5 Common</td><td>32 cards</td><td>Uniform, without replacement</td></tr><tr><td>3 Uncommon</td><td>32 cards</td><td>Uniform, without replacement</td></tr><tr><td>2 Basic Energy</td><td>6 cards</td><td>Uniform; duplicates allowed</td></tr><tr><td>1 Rare slot</td><td>15 holos / 16 rares</td><td>1/3 holo; 2/3 non-holo rare</td></tr></tbody></table><p>One eligible holo is selected uniformly when the holo branch is chosen. A particular holo such as Charizard therefore has probability <strong>(1/3) × (1/15) = 1/45 ≈ 2.22%</strong> per simulated pack. A particular non-holo rare has probability <strong>(2/3) × (1/16) = 1/24 ≈ 4.17%</strong>.</p><h3>Important exceptions</h3><p>Machamp #8 appears in the full set library but not in this English booster pool. Double Colorless Energy #96 is uncommon and is selected through an uncommon slot, not a Basic Energy slot.</p><h3>What the animations mean</h3><p>The complete pack result is chosen once and saved before animation. Skipping, changing pack art or reloading never rerolls that pack. No paid features, adjusted outcomes or guaranteed box ratios are added.</p><div class="dialog-callout">Recipe reference: <a href="https://www.pokemastercenter.com/pokemon-base-set-guide/" target="_blank" rel="noopener noreferrer">Base Set pack guide</a>. The exact probabilities displayed above are design choices of this simulator, not official Pokémon guarantees.</div>`},
+ about:{title:'A little nostalgia, built for free',body:`<p><strong>Pack Lab</strong> is a standalone design prototype: a free Base Set and Skyridge simulator with a collector-focused navigation, a card binder and a tactile foil-opening experience. It is not an official Pokémon product.</p><p>There are no accounts, advertisements, payment features, tradeable items or physical prizes. Every result is a local simulation.</p><h3>What is saved?</h3><p>Your virtual USD balance, quiz reward progress, collection counts, favorites, settings, current pack and latest 200 openings are stored under one separate local-storage key. Clearing site data removes your progress; there is no server backup.</p><h3>External requests</h3><p>This version loads card scans, fonts and public card prices from third-party hosts. Booster photos are stored locally, with the original host as a fallback. They receive ordinary requests from your browser. No analytics code is included. Images need an internet connection. Collection data stays on your device.</p><div class="dialog-callout">This is a prototype, with search-engine indexing disabled by default. Artwork credits and an unofficial label do not constitute permission to publish third-party material. The builder has not obtained a Pokémon license.</div>`},
  sources:{title:'Sources & image credits',body:`<p>Original artwork is used as reference imagery. No ownership or publication license is claimed.</p><h3>Card data and reference scans</h3><ul><li><a href="https://github.com/PokemonTCG/pokemon-tcg-data/blob/master/cards/en/base1.json" target="_blank" rel="noopener noreferrer">Pokémon TCG API community dataset — Base Set</a>: card names, numbering, rarity groups and image references.</li><li><a href="https://images.pokemontcg.io/base1/4_hires.png" target="_blank" rel="noopener noreferrer">Pokémon TCG API image CDN</a>: original card reference scans.</li><li><a href="https://www.tcgdex.net/" target="_blank" rel="noopener noreferrer">TCGdex</a>: alternate reference-image host.</li><li><a href="https://pkmncards.com/set/base-set/" target="_blank" rel="noopener noreferrer">PkmnCards Base Set library</a>: linked card reference.</li></ul><h3>Booster wrappers and card back</h3><ul><li><a href="https://totalcards.net/products/pokemon-wotc-base-set-booster-pack-unlimited-unweighed" target="_blank" rel="noopener noreferrer">Total Cards Base Set product photographs</a>: Charizard, Blastoise and Venusaur wrappers.</li><li><a href="${CARD_BACK}" target="_blank" rel="noopener noreferrer">Official Pokémon TCG card-back image</a>.</li></ul><h3>Set and pack references</h3><ul><li><a href="https://www.pokemastercenter.com/pokemon-base-set-guide/" target="_blank" rel="noopener noreferrer">Base Set guide</a>: 11-card pack recipe.</li><li><a href="https://comics.ha.com/itm/memorabilia/trading-cards/pokemon-machamp-8-1st-edition-2-player-starter-set-uncut-sheet-wizards-of-the-coast-1999-form-9/a/7373-36041.s" target="_blank" rel="noopener noreferrer">Heritage Auctions — original Machamp starter-printing sheet</a>: starter-product context.</li></ul><p>Pokémon artwork, characters and trademarks remain the property of the relevant rights holders, including The Pokémon Company, Nintendo, Creatures and GAME FREAK. Product photographs can also have separate rights. Reference links are included for attribution and further reading. Some images show different printings; editions and conditions are not individually modelled. Market guides set the virtual USD purchase and sale prices.</p>`}
 };
 infoContent.sources.body+='<h3>Market prices</h3><p><a href="https://tcgdex.dev/markets-prices" target="_blank" rel="noopener noreferrer">TCGdex market pricing</a> supplies TCGplayer USD market guides for the normal or holofoil version. Prices are cached for 24 hours. Card prices are used directly in USD, without a multiplier or selling fee. The Base Set Revised Unlimited booster uses its own TCGplayer market quote via TCGCSV. Missing prices disable trading for that item; dated cached quotes stay available during outages. The wallet is virtual and cannot be redeemed.</p>';
 infoContent.sources.body+='<h3>Pokémon world and mini-games</h3><p>The Kanto landscape was created for this project with the built-in image-generation tool. Quiz and Memory use Pokémon artwork from the <a href="https://github.com/PokeAPI/sprites" target="_blank" rel="noopener noreferrer">PokeAPI sprites repository</a>, stored locally for reliable play.</p>';
+
+infoContent.odds.body='<h3>Base Set · 11 cards</h3>'+infoContent.odds.body+'<h3>Skyridge · 9 cards</h3><p>Five different commons from 73, two different uncommons from 36, one reverse slot and one rare slot. The reverse slot has a 1/36 chance of one of six Crystal reverse cards; otherwise one of 144 regular reverse cards. The rare slot independently has a 1/36 chance of one of six Crystal holos; otherwise it has a 1/3 chance of one of 32 H-series holos, or a 2/3 chance of one of 35 non-holo rares. Selection within each pool is uniform. There are no Basic Energy slots.</p><p>These are transparent simulation settings, not verified factory odds. Both sets share one wallet and collection. The selected set cannot change during an unfinished opening.</p>';
+infoContent.sources.body+='<h3>Skyridge</h3><p><a href="https://github.com/PokemonTCG/pokemon-tcg-data/blob/master/cards/en/ecard3.json" target="_blank" rel="noopener noreferrer">Pokémon TCG dataset: Skyridge</a> supplies the 182 cards and scan references. The 150 reverse variants share the matching reference scan and have separate inventory and prices. <a href="https://www.tcgplayer.com/product/138153/pokemon-skyridge-skyridge-booster-pack" target="_blank" rel="noopener noreferrer">TCGplayer</a> supplies the Ho-Oh wrapper photograph. Card market quotes come from <a href="https://tcgcsv.com/tcgplayer/3/1372/prices" target="_blank" rel="noopener noreferrer">TCGCSV group 1372</a>, matched by product and printing variant. Missing quotes are unavailable for sale.</p><p>The Skyridge booster price is a saved <a href="https://www.pricecharting.com/game/pokemon-skyridge/booster-pack" target="_blank" rel="noopener noreferrer">PriceCharting ungraded booster reference</a>: $3,424.00 USD, checked 4 October 2026. It is not automatically refreshed. The quote date stays visible.</p>';
 function openInfo(type){
  const content=infoContent[type];if(!content)return;
  setMobileMenu(false);
@@ -565,14 +600,14 @@ function openInfo(type){
 function openHistory(packNumber){
  const pack=state.history.find(p=>p.number===packNumber);if(!pack)return;
  if(pack.number===state.lastPack?.number&&pendingPack()){switchTab('opener');return;}
- $('#infoDialog').classList.add('history-dialog');$('#infoTitle').textContent=`Pack #${number(packNumber)} · All 11 cards`;
- $('#infoBody').innerHTML=`<p>A page from your opening history. Tap any card to take a closer look.</p><div class="pack-grid" aria-label="All 11 cards from saved pack ${packNumber}">${pack.cards.map((id,i)=>resultCard(CARD_MAP.get(id),i,{history:true})).join('')}</div>`;
+ $('#infoDialog').classList.add('history-dialog');$('#infoTitle').textContent=`Pack #${number(packNumber)} · ${SETS[pack.set||'base1'].name} · ${pack.cards.length} cards`;
+ $('#infoBody').innerHTML=`<p>A page from your opening history. Tap any card to take a closer look.</p><div class="pack-grid" aria-label="All ${pack.cards.length} cards from saved pack ${packNumber}">${pack.cards.map((id,i)=>resultCard(CARD_MAP.get(id),i,{history:true})).join('')}</div>`;
  if(!$('#infoDialog').open)$('#infoDialog').showModal();$('#infoDialog').scrollTop=0;
 }
 function closeGuideMenu(){$('#infoDropdown').hidden=true;$('#moreInfo').setAttribute('aria-expanded','false');}
 function exportCollection(){
- const data={app:'Pack Lab — Base Set',exportedAt:new Date().toISOString(),note:'Virtual collection only. No physical, monetary or redeemable value.',...state};
- const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const link=document.createElement('a');link.href=url;link.download=`base-set-collection-${new Date().toISOString().slice(0,10)}.json`;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),3000);toast('Collection exported as JSON.');
+ const data={app:'Pokémon Pack Lab',exportedAt:new Date().toISOString(),note:'Virtual collection only. No physical, monetary or redeemable value.',...state};
+ const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const link=document.createElement('a');link.href=url;link.download=`pack-lab-collection-${new Date().toISOString().slice(0,10)}.json`;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),3000);toast('Collection exported as JSON.');
 }
 function refreshExternalState(){
  if(busy)return;try{const raw=localStorage.getItem(STORAGE_KEY);state=raw?validatedState(JSON.parse(raw)):emptyState();showIdleOverride=false;renderOpener();updateStats();syncSound();}catch{}externalStatePending=false;
@@ -594,7 +629,7 @@ document.addEventListener('click',event=>{
  const favorite=target.closest('[data-favorite]');if(favorite){const id=Number(favorite.dataset.favorite);state.favorites=state.favorites.includes(id)?state.favorites.filter(value=>value!==id):[...state.favorites,id];saveState();openCard(id);if(activeTab==='collection')renderCollection();return;}
  const filter=target.closest('[data-filter]');if(filter){setLibraryFilter(filter.dataset.filter);return;}
  const mode=target.closest('[data-mode]');if(mode&&!busy){state.settings.mode=mode.dataset.mode;saveState();syncControls();if(pendingPack())toast('Opening style changed for your next pack.');return;}
- const art=target.closest('[data-art]');if(art&&!busy){state.settings.art=art.dataset.art;saveState();renderIdle();return;}
+ const art=target.closest('[data-art]');if(art&&!busy&&!pendingPack()&&currentSet().arts.includes(art.dataset.art)){state.settings.art=art.dataset.art;saveState();renderIdle();return;}
  const layout=target.closest('[data-layout]');if(layout){state.settings.layout=layout.dataset.layout==='album'?'album':'grid';saveState();renderCollection();return;}
  const action=target.closest('[data-action]')?.dataset.action;
  if(action){
@@ -608,7 +643,7 @@ document.addEventListener('click',event=>{
   else if(action==='retry-images'&&!busy){resolvedImages.clear();warmedImages.clear();$('#assetWarning').hidden=true;renderOpener();renderHighlights();if(activeTab==='library')renderLibrary();if(activeTab==='collection')renderCollection();toast('Retrying the reference images.');}
   else if(action==='choose-pack'&&!busy){showIdleOverride=true;renderIdle();bringStageIntoView();}
   else if(action==='odds'||action==='about'||action==='sources')openInfo(action);
-  else if(action==='holos'){switchTab('library');setLibraryFilter('holo');}
+  else if(action==='holos'){$('#librarySet').value=currentSet().id;switchTab('library');setLibraryFilter(currentSet().id==='ecard3'?'secret':'holo');}
   else if(action==='export')exportCollection();
   else if(action==='import')$('#importFile').click();
   else if(action==='reset'){if(busy)toast('Finish this opening before resetting.');else $('#resetDialog').showModal();}
@@ -616,6 +651,7 @@ document.addEventListener('click',event=>{
  }
  if(!target.closest('.nav-dropdown')){$('#infoDropdown').hidden=true;$('#moreInfo').setAttribute('aria-expanded','false');}
 });
+$('#setPicker').addEventListener('change',event=>selectSet(event.target.value));
 $('#mainAction').addEventListener('click',mainAction);$('#secondaryAction').addEventListener('click',secondaryAction);
 $('#menuToggle').addEventListener('click',()=>{const open=!$('#navBar').classList.contains('mobile-open');setMobileMenu(open);if(open)$('#navSearch').focus();});
 $('#sidebarScrim').addEventListener('click',()=>{setMobileMenu(false);$('#menuToggle').focus();});
@@ -623,8 +659,8 @@ $('#navSearch').addEventListener('input',()=>{const query=normalized($('#navSear
 $('#navSearch').addEventListener('keydown',event=>{if(event.key==='Enter'){const first=$$('.main-nav [role="tab"]').find(button=>!button.hidden);if(first){event.preventDefault();switchTab(first.dataset.tab);}}});
 $('#moreInfo').addEventListener('click',()=>{const open=$('#infoDropdown').hidden;$('#infoDropdown').hidden=!open;$('#moreInfo').setAttribute('aria-expanded',String(open));});
 ['librarySearch','collectionSearch'].forEach(id=>{let timer;const render=id==='librarySearch'?renderLibrary:renderCollection;$(`#${id}`).addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(render,100);});});
-['libraryKind','librarySort'].forEach(id=>$(`#${id}`).addEventListener('change',renderLibrary));
-['collectionView','collectionSort'].forEach(id=>$(`#${id}`).addEventListener('change',renderCollection));
+['libraryKind','librarySort','librarySet'].forEach(id=>$(`#${id}`).addEventListener('change',renderLibrary));
+['collectionView','collectionSort','collectionSet'].forEach(id=>$(`#${id}`).addEventListener('change',renderCollection));
 $('#confirmReset').addEventListener('click',()=>{if(busy||economyBusy)return;const settings={...state.settings};state=emptyState();quiz=null;state.settings=settings;showIdleOverride=false;saveState(true);$('#resetDialog').close();renderOpener();updateStats();if(activeTab==='library')renderLibrary();toast('Your Pack Lab collection has been reset.');});
 $$('dialog').forEach(dialog=>dialog.addEventListener('click',event=>{if(event.target!==dialog)return;const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)dialog.close();}));
 document.addEventListener('keydown',event=>{
@@ -694,11 +730,11 @@ $('#importFile').addEventListener('change',async event=>{
 $('#confirmImport').addEventListener('click',()=>{if(!pendingImport||busy||economyBusy)return;state=pendingImport;pendingImport=null;quiz=null;showIdleOverride=false;saveState(true);$('#importDialog').close();renderOpener();updateStats();syncSound();if(activeTab==='library')renderLibrary();toast('Your collection is home.');});
 
 let priceStorage;try{priceStorage=localStorage;}catch{}
-priceBook=PackLabPricing.create(CARDS,{storage:priceStorage,seed:globalThis.PACK_LAB_PRICE_SNAPSHOT,onUpdate:refreshPriceViews});
+priceBook=PackLabPricing.create(CARDS,{storage:priceStorage,seed:{...globalThis.PACK_LAB_PRICE_SNAPSHOT,quotes:{...globalThis.PACK_LAB_PRICE_SNAPSHOT.quotes,...PACK_LAB_SKYRIDGE.quotes}},onUpdate:refreshPriceViews});
 renderHighlights();renderOpener();updateStats();syncSound();setMobileMenu(false);
 priceBook.refresh();
 const startingTab=ROUTES[location.hash];if(startingTab&&startingTab!=='opener')switchTab(startingTab);
 if(storageCorrupt)toast('The saved data could not be read. A new session has been started.');
 // A read-only diagnostic interface: no setters and no forced rewards.
-Object.defineProperty(window,'PACK_LAB_DIAGNOSTICS',{value:Object.freeze({version:2,poolSizes:Object.freeze(Object.fromEntries(Object.entries(POOLS).map(([key,values])=>[key,values.length]))),samplePack:()=>generatePack(),getTotals:()=>({...totals()}),validate:()=>state.packs*11===totals().total+state.economy.soldCards}),writable:false});
+Object.defineProperty(window,'PACK_LAB_DIAGNOSTICS',{value:Object.freeze({version:2,poolSizes:Object.freeze(Object.fromEntries(Object.entries(POOLS).map(([key,values])=>[key,values.length]))),samplePack:()=>generatePack(),getTotals:()=>({...totals()}),validate:()=>state.packCounts.base1*11+state.packCounts.ecard3*9===totals().total+state.economy.soldCards}),writable:false});
 })();

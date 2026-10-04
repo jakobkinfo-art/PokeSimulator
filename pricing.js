@@ -6,12 +6,13 @@
  const PACK_PRODUCT_ID=138130;
  const PACK_SOURCE_URL='https://www.tcgplayer.com/product/138130/pokemon-base-set-base-set-booster-pack-revised-unlimited-edition';
  const toCents=amount=>Math.round((amount+Number.EPSILON)*100);
+ function variantsFor(card){return card.rarity==='reverse'?['reverse-holofoil']:['holo','secret'].includes(card.rarity)?['unlimited-holofoil','holofoil']:['unlimited','normal'];}
  function normalize(card,data,fetchedAt=Date.now()){
   if(data?.id!==`base1-${card.id}`)return null;
   const pricing=data.pricing?.tcgplayer;
   if(pricing?.unit!=='USD')return null;
   // Never substitute first edition or reverse holo prices for these cards.
-  const variants=card.rarity==='holo'?['unlimited-holofoil','holofoil']:['unlimited','normal'];
+  const variants=variantsFor(card);
   for(const variant of variants){
    const amount=pricing[variant]?.marketPrice;
    if(typeof amount==='number'&&Number.isFinite(amount)&&amount>0&&amount<=1e7&&Number.isFinite(Date.parse(pricing.updated))){
@@ -21,7 +22,13 @@
   return null;
  }
  function validQuote(card,q){
-  return q?.source==='TCGplayer'&&q.currency==='USD'&&typeof q.amount==='number'&&Number.isFinite(q.amount)&&q.amount>0&&q.amount<=1e7&&Number.isFinite(Date.parse(q.updated))&&Number.isFinite(q.fetchedAt)&&q.fetchedAt>0&&q.fetchedAt<=Date.now()+60000&&(card.rarity==='holo'?['unlimited-holofoil','holofoil']:['unlimited','normal']).includes(q.variant);
+  return q?.source==='TCGplayer'&&q.currency==='USD'&&typeof q.amount==='number'&&Number.isFinite(q.amount)&&q.amount>0&&q.amount<=1e7&&Number.isFinite(Date.parse(q.updated))&&Number.isFinite(q.fetchedAt)&&q.fetchedAt>0&&q.fetchedAt<=Date.now()+60000&&variantsFor(card).includes(q.variant);
+ }
+ function normalizeCSV(card,data,updated,fetchedAt=Date.now()){
+  const variant=card.rarity==='reverse'?'Reverse Holofoil':['holo','secret'].includes(card.rarity)?'Holofoil':'Normal';
+  const row=data?.success===true?data.results?.find(p=>p.productId===card.productId&&p.subTypeName===variant):null;
+  const q={amount:row?.marketPrice,currency:'USD',source:'TCGplayer',provider:'TCGCSV',variant:variant.toLowerCase().replace(' ','-'),updated,fetchedAt};
+  return validQuote(card,q)?q:null;
  }
  function quote(card,q){
   if(!validQuote(card,q))return {cents:null,source:'Price unavailable',unavailable:true};
@@ -47,7 +54,7 @@
   async function refresh(force=false){
    if(refreshing||typeof fetcher!=='function')return;
    refreshing=true;onUpdate();let failures=0,successes=0;
-   const queue=cards.filter(card=>force||!quotes[card.id]||Date.now()-quotes[card.id].fetchedAt>=TTL);
+   const queue=cards.filter(card=>card.set!=='ecard3'&&(force||!quotes[card.id]||Date.now()-quotes[card.id].fetchedAt>=TTL));
    async function worker(){
     while(queue.length&&failures<4){
      const card=queue.shift(),controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),10000);
@@ -67,10 +74,18 @@
     try{const response=await fetcher('/api/pack-price',{signal:controller.signal});if(!response.ok)throw new Error('Pack price request failed');const data=await response.json();if(packQuote(data.pack).unavailable)throw new Error('Invalid pack price');mergePack(data.pack);if(data.cached)failures++;}
     catch{failures++;}finally{clearTimeout(timeout);}
    }
-   try{await Promise.all([...Array.from({length:4},worker),refreshPack()]);persist();}
+   async function refreshSkyridge(){
+    if(typeof location==='undefined'||!['http:','https:'].includes(location.protocol))return;
+    const sky=cards.filter(c=>c.set==='ecard3');
+    if(!sky.some(c=>force||!quotes[c.id]||Date.now()-quotes[c.id].fetchedAt>=TTL))return;
+    const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),12000);
+    try{const response=await fetcher('/api/skyridge-prices',{signal:controller.signal});if(!response.ok)throw new Error('Skyridge prices unavailable');const data=await response.json();merge(data.quotes);if(data.cached)failures++;else successes+=Object.keys(data.quotes||{}).length;}
+    catch{failures++;}finally{clearTimeout(timeout);}
+   }
+   try{await Promise.all([...Array.from({length:4},worker),refreshPack(),refreshSkyridge()]);persist();}
    finally{refreshing=false;onUpdate({failures,successes});}
   }
   return {quotes,get:card=>quote(card,quotes[card.id]),getPack:()=>packQuote(pack),refresh,get refreshing(){return refreshing;}};
  }
- return {TTL,CACHE_KEY,PACK_PRODUCT_ID,PACK_SOURCE_URL,toCents,normalize,validQuote,quote,normalizePack,packQuote,create};
+ return {TTL,CACHE_KEY,PACK_PRODUCT_ID,PACK_SOURCE_URL,toCents,normalize,normalizeCSV,validQuote,quote,normalizePack,packQuote,create};
 });

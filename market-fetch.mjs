@@ -1,7 +1,7 @@
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 const run=promisify(execFile);
-const allowed=url=>['https://tcgcsv.com/last-updated.txt','https://tcgcsv.com/tcgplayer/3/604/prices'].includes(url)||/^https:\/\/api\.tcgdex\.net\/v2\/en\/cards\/base1-\d{1,3}$/.test(url);
+const allowed=url=>['https://tcgcsv.com/last-updated.txt','https://tcgcsv.com/tcgplayer/3/604/prices','https://tcgcsv.com/tcgplayer/3/1372/prices'].includes(url)||/^https:\/\/api\.tcgdex\.net\/v2\/en\/cards\/base1-\d{1,3}$/.test(url);
 
 // Node 18/22 can lack the Windows enterprise root certificates. In that case,
 // use Windows' HTTPS client and its normal certificate validation, never an

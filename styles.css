@@ -44,9 +44,15 @@
 /* Crop the original square photographs geometrically. Never key out light
    pixels: the silver foil and printed highlights must remain fully opaque. */
 .art-mini{position:relative;filter:none}
+.set-selector{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:0 0 18px;padding:14px 18px;background:#102e39d9;border:1px solid #b5c39c38;border-radius:9px}.set-selector label{color:var(--gold);font-size:10px;letter-spacing:1.5px;font-weight:700}.set-selector select{min-width:230px}.set-selector>span{font-size:11px;color:#b5cbc7}.set-selector select:disabled{opacity:.65}.rarity-label.secret,.rarity-label.reverse{color:#9cded5}.reverse-printing{filter:saturate(1.12)}
+#stage[data-set="ecard3"]{background:radial-gradient(ellipse at 50% 40%,#54767355,transparent 65%)}
+#stage[data-set="ecard3"] .pull-rail{grid-template-columns:repeat(9,minmax(0,1fr))}
+@media(max-width:700px){.set-selector{gap:9px;padding:12px}.set-selector select{flex:1;min-width:190px}.set-selector>span{flex-basis:100%;font-size:10px}}
 .pack-cutout img[data-img-kind="pack"],.art-mini img[data-img-kind="pack"]{position:absolute;left:50%;top:-2.5%;height:105.5%;width:auto;max-width:none;object-fit:contain;transform:translateX(-50%);filter:none;opacity:1}
 img[data-img-kind="pack"][data-img-art="charizard"]{clip-path:polygon(22.5% 2.5%,40% 3.1%,63% 3.1%,78.9% 2.5%,79.2% 5%,78.5% 31%,78.3% 63%,78.2% 88%,79% 96.5%,59% 97%,42% 97%,22.7% 96.5%,23.7% 91%,23.8% 61%,23.4% 32%,22.9% 12%)}
 img[data-img-kind="pack"][data-img-art="blastoise"]{clip-path:polygon(27.6% 2.6%,74.3% 2.6%,74.1% 18%,73.4% 40%,73.1% 66%,73.4% 86%,74.3% 91%,74.4% 97.1%,25.7% 97.1%,25.8% 93%,27.1% 86%,27.4% 44%,27.5% 22%,27.1% 6%)}
 img[data-img-kind="pack"][data-img-art="venusaur"]{clip-path:polygon(22.1% 3.1%,38% 3.4%,56% 3.9%,77.4% 3.5%,77.6% 6%,76.7% 23%,77% 52%,77.2% 80%,77.1% 91%,77.5% 96.3%,60% 96.5%,42% 96.4%,22.1% 96.4%,21.9% 91%,22.3% 73%,22.2% 46%,22% 17%)}
 .pack-photo.front:hover{filter:drop-shadow(0 13px 11px #0007)}.art-picker button:hover{filter:none}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}.pack-photo.front:hover,.highlight-card:hover{transform:none}}
+
+.pack-cutout img[data-img-art="skyridge"],.art-mini img[data-img-art="skyridge"]{top:0;height:100%;width:100%;object-fit:fill;clip-path:inset(0);}
