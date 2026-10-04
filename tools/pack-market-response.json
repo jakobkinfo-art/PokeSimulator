@@ -1,0 +1,37 @@
+{
+  "updated": "2026-10-02T20:05:49+0000",
+  "prices": [
+    {
+      "productId": 138130,
+      "lowPrice": 949.99,
+      "midPrice": 990.0,
+      "highPrice": 1500.0,
+      "marketPrice": 927.56,
+      "directLowPrice": null,
+      "subTypeName": "Normal"
+    }
+  ],
+  "products": {
+    "productId": 138130,
+    "name": "Base Set Booster Pack [Revised Unlimited Edition]",
+    "cleanName": "Base Set Booster Pack Revised Unlimited Edition",
+    "imageUrl": "https://tcgplayer-cdn.tcgplayer.com/product/138130_200w.jpg",
+    "categoryId": 3,
+    "groupId": 604,
+    "url": "https://www.tcgplayer.com/product/138130/pokemon-base-set-base-set-booster-pack-revised-unlimited-edition",
+    "modifiedOn": "2022-12-07T13:53:45.347",
+    "imageCount": 1,
+    "presaleInfo": {
+      "isPresale": false,
+      "releasedOn": null,
+      "note": null
+    },
+    "extendedData": [
+      {
+        "name": "CardText",
+        "displayName": "Card Text",
+        "value": "This is the reprinted Base Set unlimited booster pack that introduced the new shadowed border design and card format introduced in Jungle.\r\n<br>Disclaimer: This product comes in 3 different sealed wrapping designs. The design you receive when ordering this product depends on the seller's inventory. \r\n<br>\r\n<br><strong>(Not to be confused with the original 1st Edition and Unlimited Shadowless print runs)</strong>"
+      }
+    ]
+  }
+}

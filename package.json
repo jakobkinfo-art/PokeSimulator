@@ -1,0 +1,11 @@
+{
+  "name": "pokemon-pack-lab",
+  "version": "5.0.0",
+  "private": true,
+  "description": "A Pokemon pack simulator with real market prices, virtual USD funds, card sales and quiz rewards.",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node tests/simulator.test.cjs",
+    "check": "node --check app.js && node --check pricing.js && node --check price-snapshot.js && node --check market-fetch.mjs && node --check pack-prices.mjs && node --check server.mjs && node --check tools/refresh-prices.cjs"
+  }
+}
